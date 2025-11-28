@@ -295,56 +295,240 @@ export class USBAdapter {
   }
 
   async connect(): Promise<void> {
+    console.log("[USB] ===== USB CONNECTION START =====");
+    console.log("[USB] Opening USB device...");
     this.device.open();
     
+    const descriptor = this.device.deviceDescriptor;
+    console.log("[USB] Device descriptor:");
+    console.log("[USB]   - Vendor ID:", `0x${descriptor.idVendor.toString(16).padStart(4, '0')}`);
+    console.log("[USB]   - Product ID:", `0x${descriptor.idProduct.toString(16).padStart(4, '0')}`);
+    console.log("[USB]   - Manufacturer:", descriptor.iManufacturer);
+    console.log("[USB]   - Product:", descriptor.iProduct);
+    
     const config = this.device.configDescriptor;
-    for (const iface of config.interfaces) {
+    console.log("[USB] Configuration descriptor:");
+    console.log("[USB]   - Number of interfaces:", config.interfaces.length);
+    
+    // CRITICAL: Interface selection matters!
+    // Interface 0 (class 7) is often the CUPS/driver interface, NOT raw ESC/POS
+    // We need vendor-specific (255) or the "Built-in USB" ESC/POS interface
+    // Collect all candidate interfaces first, then try in priority order
+    
+    interface Candidate {
+      iface: any;
+      index: number;
+      setting: any;
+      priority: number; // Lower = higher priority
+    }
+    
+    const candidates: Candidate[] = [];
+    
+    for (let i = 0; i < config.interfaces.length; i++) {
+      const iface = config.interfaces[i];
       const setting = iface[0];
+      console.log(`[USB] Interface ${i}:`);
+      console.log(`[USB]   - Interface number:`, setting.bInterfaceNumber);
+      const classDesc = setting.bInterfaceClass === 7 ? "(Printer Class - CUPS/driver)" : 
+                       setting.bInterfaceClass === 255 ? "(Vendor-specific - raw ESC/POS)" : 
+                       "(Other)";
+      console.log(`[USB]   - Class:`, setting.bInterfaceClass, classDesc);
+      console.log(`[USB]   - Subclass:`, setting.bInterfaceSubClass);
+      console.log(`[USB]   - Protocol:`, setting.bInterfaceProtocol);
+      console.log(`[USB]   - Number of endpoints:`, setting.endpoints.length);
       
-      // Accept printer class (7) or vendor-specific (255)
-      if (setting.bInterfaceClass === 7 || setting.bInterfaceClass === 255) {
-        try {
-          this.interface = this.device.interface(setting.bInterfaceNumber);
-          this.interface.claim();
-          
-          const outEndpoint = setting.endpoints.find((ep: any) => (ep.bEndpointAddress & 0x80) === 0);
-          if (outEndpoint) {
-            this.endpoint = this.interface.endpoint(outEndpoint.bEndpointAddress);
-            return;
-          }
-        } catch (e) {
-          continue;
+      for (let j = 0; j < setting.endpoints.length; j++) {
+        const ep = setting.endpoints[j];
+        const isOut = (ep.bEndpointAddress & 0x80) === 0;
+        console.log(`[USB]   Endpoint ${j}:`);
+        console.log(`[USB]     - Address:`, `0x${ep.bEndpointAddress.toString(16).padStart(2, '0')}`, isOut ? "(OUT)" : "(IN)");
+        console.log(`[USB]     - Type:`, ep.bmAttributes & 0x03, (ep.bmAttributes & 0x03) === 2 ? "(Bulk)" : "");
+        console.log(`[USB]     - Max packet size:`, ep.wMaxPacketSize);
+      }
+      
+      // Check for bulk OUT endpoint
+      const hasBulkOut = setting.endpoints.some((ep: any) => 
+        (ep.bEndpointAddress & 0x80) === 0 && (ep.bmAttributes & 0x03) === 2
+      );
+      
+      if (hasBulkOut) {
+        // Priority: vendor-specific (255) = 1, other classes with bulk OUT = 2, printer class (7) = 3
+        let priority = 3; // Default: printer class (CUPS/driver)
+        if (setting.bInterfaceClass === 255) {
+          priority = 1; // Vendor-specific (raw ESC/POS)
+        } else if (setting.bInterfaceClass !== 7) {
+          priority = 2; // Other classes (might be "Built-in USB" ESC/POS interface)
         }
+        candidates.push({iface, index: i, setting, priority});
+        console.log(`[USB]   → Added as candidate (priority ${priority})`);
+      }
+    }
+    
+    // Sort by priority (vendor-specific first)
+    candidates.sort((a, b) => a.priority - b.priority);
+    
+    console.log(`[USB] Found ${candidates.length} candidate interface(s), trying in priority order...`);
+    
+    // Try interfaces in priority order
+    for (const candidate of candidates) {
+      const {setting} = candidate;
+      try {
+        console.log(`[USB] Attempting to claim interface ${candidate.index} (class ${setting.bInterfaceClass})...`);
+        this.interface = this.device.interface(setting.bInterfaceNumber);
+        this.interface.claim();
+        console.log(`[USB] ✓ Interface ${candidate.index} claimed successfully`);
+        
+        const outEndpoint = setting.endpoints.find((ep: any) => 
+          (ep.bEndpointAddress & 0x80) === 0 && (ep.bmAttributes & 0x03) === 2 // Bulk OUT
+        );
+        if (outEndpoint) {
+          console.log(`[USB] Using OUT endpoint:`, `0x${outEndpoint.bEndpointAddress.toString(16).padStart(2, '0')}`);
+          this.endpoint = this.interface.endpoint(outEndpoint.bEndpointAddress);
+          console.log("[USB] ===== USB CONNECTION SUCCESS =====");
+          
+          if (setting.bInterfaceClass === 7) {
+            console.log(`[USB] ⚠️  WARNING: Using Printer Class interface (7) - this may be CUPS/driver interface!`);
+            console.log(`[USB]    If prints are blank, configure printer to "Built-in USB" ESC/POS mode:`);
+            console.log(`[USB]    1. Power on while holding FEED button`);
+            console.log(`[USB]    2. Navigate to Mode 17: Interface Selection`);
+            console.log(`[USB]    3. Set to "Built-in USB" (option 2)`);
+            console.log(`[USB]    4. Also remove printer from macOS System Settings → Printers`);
+          } else if (setting.bInterfaceClass === 255) {
+            console.log(`[USB] ✓ Using Vendor-specific interface (255) - this should be raw ESC/POS!`);
+          }
+          return;
+        } else {
+          console.log(`[USB] No bulk OUT endpoint found in interface ${candidate.index}`);
+          this.interface.release();
+          this.interface = null;
+        }
+      } catch (e: any) {
+        console.error(`[USB] Failed to claim interface ${candidate.index}:`, e?.message || e);
+        if (this.interface) {
+          try {
+            this.interface.release();
+          } catch {}
+          this.interface = null;
+        }
+        continue;
       }
     }
 
+    console.error("[USB] ===== USB CONNECTION FAILED =====");
     throw new Error("No usable endpoint found");
   }
 
   async write(data: Buffer): Promise<void> {
-    console.log(`[🧾] USB write: sending ${data.length} bytes`);
-    console.log(`[🧾] USB write first 32 bytes:`, Array.from(data.slice(0, 32)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
-    if (data.length > 32) {
-      console.log(`[🧾] USB write last 32 bytes:`, Array.from(data.slice(-32)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+    console.log("[USB] ===== USB WRITE START =====");
+    console.log("[USB] Data size:", data.length, "bytes");
+    console.log("[USB] Data as string (first 200 chars):", data.toString().slice(0, 200).replace(/[\x00-\x1F\x7F-\xFF]/g, (c) => {
+      const code = c.charCodeAt(0);
+      if (code === 0x0A) return '\\n';
+      if (code === 0x0D) return '\\r';
+      if (code === 0x1B) return '\\x1B';
+      return `\\x${code.toString(16).padStart(2, '0')}`;
+    }));
+    console.log("[USB] First 64 bytes:", Array.from(data.slice(0, 64)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+    if (data.length > 64) {
+      console.log("[USB] Last 64 bytes:", Array.from(data.slice(-64)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
     }
     
-    // Send the main data
-    await new Promise<void>((resolve, reject) => {
+    // Find GS v 0 command
+    const gsvIndex = data.indexOf(Buffer.from([0x1D, 0x76, 0x30]));
+    if (gsvIndex >= 0) {
+      console.log("[USB] GS v 0 command found at offset:", gsvIndex);
+      const headerEnd = gsvIndex + 8; // GS v 0 header is 8 bytes
+      console.log("[USB] GS v 0 header (8 bytes):", Array.from(data.slice(gsvIndex, headerEnd)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+      
+      // Extract image command size from header
+      const xL = data[gsvIndex + 4];
+      const xH = data[gsvIndex + 5];
+      const yL = data[gsvIndex + 6];
+      const yH = data[gsvIndex + 7];
+      const bytesPerRow = xL + (xH << 8);
+      const heightDots = yL + (yH << 8);
+      const bitmapSize = bytesPerRow * heightDots;
+      const imageCommandEnd = gsvIndex + 8 + bitmapSize;
+      
+      console.log(`[USB] Image dimensions: ${bytesPerRow} bytes × ${heightDots} dots = ${bitmapSize} bytes bitmap`);
+      
+      // Split data: before image, image command, after image
+      const beforeImage = data.slice(0, gsvIndex);
+      const imageCommand = data.slice(gsvIndex, imageCommandEnd); // Header + bitmap only
+      const afterImage = data.slice(imageCommandEnd);
+      
+      console.log("[USB] Sending data in normal chunks");
+      console.log("[USB] GS v 0 command:", imageCommand.length, "bytes");
+      console.log("[USB] GS v 0 header:", Array.from(imageCommand.slice(0, 8)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+      
       const startTime = Date.now();
-      this.endpoint.transfer(data, (error: any) => {
-        const duration = Date.now() - startTime;
-        if (error) {
-          console.error(`[🧾] USB transfer failed after ${duration}ms:`, error);
-          reject(error);
-        } else {
-          console.log(`[🧾] USB transfer completed in ${duration}ms`);
-          resolve();
+      const chunkSize = 64;
+      
+      // Send before image
+      for (let i = 0; i < beforeImage.length; i += chunkSize) {
+        const chunk = beforeImage.slice(i, i + chunkSize);
+        await new Promise<void>((resolve, reject) => {
+          this.endpoint.transfer(chunk, (error: any) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+      }
+      
+      // Send image command in chunks
+      for (let i = 0; i < imageCommand.length; i += chunkSize) {
+        const chunk = imageCommand.slice(i, i + chunkSize);
+        await new Promise<void>((resolve, reject) => {
+          this.endpoint.transfer(chunk, (error: any) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+      }
+      
+      // Send after image
+      for (let i = 0; i < afterImage.length; i += chunkSize) {
+        const chunk = afterImage.slice(i, i + chunkSize);
+        await new Promise<void>((resolve, reject) => {
+          this.endpoint.transfer(chunk, (error: any) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+      }
+      
+      const duration = Date.now() - startTime;
+      console.log("[USB] Transfer completed in", duration, "ms");
+      // Give printer time to process - longer delay for text
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } else {
+      // No GS v 0 command, send normally in chunks
+      const chunkSize = 64;
+      const startTime = Date.now();
+      
+      for (let i = 0; i < data.length; i += chunkSize) {
+        const chunk = data.slice(i, i + chunkSize);
+        await new Promise<void>((resolve, reject) => {
+          this.endpoint.transfer(chunk, (error: any) => {
+            if (error) {
+              console.error(`[USB] Chunk ${i}-${i + chunk.length} failed:`, error);
+              reject(error);
+            } else {
+              resolve();
+            }
+          });
+        });
+        if (i + chunkSize < data.length) {
+          await new Promise(resolve => setTimeout(resolve, 5));
         }
-      });
-    });
+      }
+      
+      const duration = Date.now() - startTime;
+      console.log("[USB] Transfer completed in", duration, "ms");
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     
-    // Give the printer time to process the data
-    await new Promise(resolve => setTimeout(resolve, 100));
+    console.log("[USB] ===== USB WRITE END =====");
   }
 
   close(): void {
@@ -371,71 +555,53 @@ export class MessageFormatter {
 	async formatMessage(content: MessageContent): Promise<Buffer> {
 		this.encoder.clear();
 
-		// Initialize
+		// Initialize printer (ESC @) - CRITICAL
 		this.encoder.init();
 
-		// Format date
-		const dateToFormat = content.date ? new Date(content.date) : new Date();
-		const formattedDateTime = dateToFormat.toLocaleString("en-US", {
-			year: "numeric",
-			month: "short",
-			day: "numeric",
-			hour: "numeric",
-			minute: "2-digit",
-			hour12: true,
-			timeZone: "America/New_York",
-		});
-
-		// Auto-set source to "voicemail" if date is provided but source isn't
-		const source =
-			content.date && !content.source ? "voicemail" : content.source;
-
-		// Date header with source
-		const headerText = source
-			? `${formattedDateTime} (${source})`
-			: formattedDateTime;
-
-		this.encoder.align("left").bold(true).text(headerText).newline();
-
-		// Name section (no "From:" prefix)
+		// Build plain text message - EXACTLY like the original lp command
+		let message = "";
+		
 		if (content.name) {
-			this.encoder.text(this.normalizeText(content.name)).newline();
+			message += content.name + "\n\n";
 		}
-
-		this.encoder.bold(false).newline();
-
-		// Text content with wrapping
+		
 		if (content.text) {
-			this.encoder.align("left");
-			const wrappedText = this.wrapText(content.text, 48);
-			this.encoder.text(wrappedText).newline(2);
+			message += content.text;
 		}
 
-		// Image processing
+		// Add image placeholder if image exists
+		if (content.image && !content.text) {
+			message += "[📸 photo attached]";
+		}
+
+		// Send plain text (no formatting commands) - just like lp -o raw
+		this.encoder.text(message);
+
+		// Add newlines at end (like original: \n\n\n\n\n\n)
+		this.encoder.newline(6);
+
+		// Image processing (if image provided)
 		if (content.image) {
 			try {
-				console.log("[🧾] Starting image processing...");
-				const imageData = await Promise.race([
-					this.processImage(content.image),
-					new Promise<Buffer>((_, reject) => 
-						setTimeout(() => reject(new Error("Image processing timeout after 15 seconds")), 15000)
-					)
-				]);
-				console.log("[🧾] Image processed, adding to print buffer...");
-				this.encoder.align("left");        // critical!
-				this.encoder.text("\n");           // one empty line before image
+				const imageData = await this.processImage(content.image);
+				this.encoder.text("\n"); // Line feed before image
 				this.encoder.image(imageData);
-				console.log("[🧾] Image added to buffer");
+				this.encoder.text("\n"); // Line feed after image
 			} catch (error: any) {
-				console.error("[🧾] Image processing failed:", error?.message || error);
-				this.encoder.align("center").text(`[Image Error: ${error?.message || "Unknown"}]`).newline(2);
+				console.error("[FORMATTER] Image processing error:", error?.message || error);
+				this.encoder.text("[Image Error]\n");
 			}
 		}
 
-		// Footer
-		this.encoder.newline(3).cut();
-
-		return this.encoder.getBuffer();
+		const buffer = this.encoder.getBuffer();
+		console.log("[FORMATTER] Sending buffer:", buffer.length, "bytes");
+		console.log("[FORMATTER] First 64 bytes:", Array.from(buffer.slice(0, 64)).map(b => {
+			if (b >= 32 && b <= 126) return `'${String.fromCharCode(b)}'`;
+			return `0x${b.toString(16).padStart(2, '0')}`;
+		}).join(' '));
+		console.log("[FORMATTER] Buffer as string (printable chars):", buffer.toString().replace(/[\x00-\x1F\x7F-\xFF]/g, '?'));
+		
+		return buffer;
 	}
 
 	private normalizeText(text: string): string {
@@ -469,26 +635,38 @@ export class MessageFormatter {
 	}
 
 	private async processImage(imageFile: File): Promise<Buffer> {
-		console.log("[🧾] Processing image, size:", imageFile.size, "type:", imageFile.type);
+		console.log("[IMAGE] ===== IMAGE PROCESSING START =====");
+		console.log("[IMAGE] File details:");
+		console.log("[IMAGE]   - Name:", imageFile.name);
+		console.log("[IMAGE]   - Size:", imageFile.size, "bytes");
+		console.log("[IMAGE]   - Type:", imageFile.type);
+		console.log("[IMAGE]   - Last modified:", new Date(imageFile.lastModified).toISOString());
 		
 		// Convert File to Buffer
+		console.log("[IMAGE] Converting File to Buffer...");
 		const arrayBuffer = await imageFile.arrayBuffer();
-		let buffer = Buffer.from(arrayBuffer);
-		console.log("[🧾] Image buffer created, first 16 bytes:", Array.from(buffer.slice(0, 16)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+		const buffer = Buffer.from(arrayBuffer);
+		console.log("[IMAGE] Buffer created:", buffer.length, "bytes");
+		console.log("[IMAGE] First 32 bytes:", Array.from(buffer.slice(0, 32)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
 		
-		// Parse PNG (pngjs can handle some formats, but let's be explicit)
+		// Parse PNG
+		console.log("[IMAGE] Parsing PNG...");
 		let png: PNG;
 		try {
 			png = PNG.sync.read(buffer);
-			console.log("[🧾] PNG parsed, dimensions:", png.width, "x", png.height);
-			console.log("[🧾] PNG data length:", png.data.length, "bytes (expected:", png.width * png.height * 4, ")");
+			console.log("[IMAGE] PNG parsed successfully:");
+			console.log("[IMAGE]   - Width:", png.width, "px");
+			console.log("[IMAGE]   - Height:", png.height, "px");
+			console.log("[IMAGE]   - Data length:", png.data.length, "bytes");
+			console.log("[IMAGE]   - Expected data:", png.width * png.height * 4, "bytes");
 			
-			// Sample some pixel values from the image
+			// Sample pixels from corners and center
 			const samplePixels = [
 				[0, 0], [png.width - 1, 0], [0, png.height - 1], 
+				[png.width - 1, png.height - 1],
 				[Math.floor(png.width/2), Math.floor(png.height/2)]
 			];
-			console.log("[🧾] Sample pixel values:");
+			console.log("[IMAGE] Sample pixel values:");
 			for (const [x, y] of samplePixels) {
 				const idx = (y * png.width + x) * 4;
 				if (idx + 3 < png.data.length) {
@@ -496,15 +674,13 @@ export class MessageFormatter {
 					const g = png.data[idx + 1];
 					const b = png.data[idx + 2];
 					const a = png.data[idx + 3];
-					const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-					console.log(`[🧾]   Pixel [${x}, ${y}]: RGBA(${r},${g},${b},${a}) -> gray=${gray}`);
+					const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+					console.log(`[IMAGE]   Pixel [${x}, ${y}]: RGBA(${r},${g},${b},${a}) -> luminance=${lum} -> ${lum < 128 ? 'BLACK' : 'white'}`);
 				}
 			}
-		} catch (error) {
-			console.error("[🧾] Failed to parse as PNG:", error);
-			// If it's not PNG, we need to convert it - but pngjs only handles PNG
-			// For now, reject non-PNG images
-			throw new Error("Image must be PNG format. Please convert your image to PNG first.");
+		} catch (error: any) {
+			console.error("[IMAGE] PNG parse failed:", error?.message || error);
+			throw new Error("Image must be PNG format");
 		}
 		
 		// Resize if too large (thermal printers are usually 384px wide max)
@@ -513,9 +689,8 @@ export class MessageFormatter {
 			const scale = MAX_WIDTH / png.width;
 			const newWidth = MAX_WIDTH;
 			const newHeight = Math.floor(png.height * scale);
-			console.log(`[🧾] Resizing image from ${png.width}x${png.height} to ${newWidth}x${newHeight}`);
+			console.log(`[IMAGE] Resizing: ${png.width}x${png.height} -> ${newWidth}x${newHeight} (scale: ${scale.toFixed(3)})`);
 			
-			// Simple nearest-neighbor resize
 			const resized = new PNG({ width: newWidth, height: newHeight });
 			for (let y = 0; y < newHeight; y++) {
 				for (let x = 0; x < newWidth; x++) {
@@ -533,49 +708,166 @@ export class MessageFormatter {
 				}
 			}
 			png = resized;
-			console.log("[🧾] Resize complete");
+			console.log("[IMAGE] Resize complete");
 		}
 
-		// Convert to ESC/POS bitmap
-		console.log("[🧾] Converting to bitmap...");
+		console.log("[IMAGE] Converting to bitmap...");
 		const result = this.convertToBitmap(png);
-		console.log("[🧾] Bitmap conversion complete, size:", result.length, "bytes");
+		console.log("[IMAGE] ===== IMAGE PROCESSING END =====");
 		return result;
 	}
 
 	private convertToBitmap(png: PNG): Buffer {
+		console.log("[BITMAP] ===== BITMAP CONVERSION START =====");
 		const { width, height, data } = png;
 
-		const bytesPerLine = Math.ceil(width / 8);
-		const bitmap = Buffer.alloc(bytesPerLine * height);
+		const bytesPerRow = Math.ceil(width / 8);
+		const bitmap = Buffer.alloc(bytesPerRow * height);
+		console.log("[BITMAP] Bitmap parameters:");
+		console.log("[BITMAP]   - Image dimensions:", width, "x", height, "px");
+		console.log("[BITMAP]   - Bytes per row:", bytesPerRow);
+		console.log("[BITMAP]   - Total bitmap size:", bitmap.length, "bytes");
+		console.log("[BITMAP]   - Expected size:", bytesPerRow * height, "bytes");
 
+		let blackPixelCount = 0;
+		let whitePixelCount = 0;
+		let transparentPixelCount = 0;
+
+		// Convert image to 1bpp raster format
+		// Row order: top to bottom
+		// Byte order: left to right
+		// Bit order: MSB first (bit 7 = leftmost pixel)
+		// Bit value: 1 = black (print dot), 0 = white (no dot)
+		console.log("[BITMAP] Processing pixels...");
 		for (let y = 0; y < height; y++) {
-			for (let x = 0; x < bytesPerLine; x++) {
-				let byte = 0;
-				for (let b = 0; b < 8; b++) {
-					const px = x * 8 + b;
-					if (px >= width) continue;
-					const idx = (y * width + px) * 4;
-					const r = data[idx];
-					const alpha = data[idx + 3];
-					// Black if dark AND opaque
-					const isBlack = alpha > 128 && r < 128;
-					if (isBlack) byte |= (0x80 >> b);   // MSB first (correct for Epson)
+			for (let x = 0; x < width; x++) {
+				const idx = (y * width + x) * 4;
+				const r = data[idx];
+				const g = data[idx + 1];
+				const b_val = data[idx + 2];
+				const alpha = data[idx + 3];
+				
+				// Skip transparent pixels (treat as white)
+				if (alpha < 128) {
+					transparentPixelCount++;
+					continue;
 				}
-				bitmap[y * bytesPerLine + x] = byte;
+				
+				// Convert to grayscale using standard weights
+				const luminance = 0.299 * r + 0.587 * g + 0.114 * b_val;
+				
+				// Threshold: dark pixels become black (1), light pixels become white (0)
+				const isBlack = luminance < 128;
+				
+				if (isBlack) {
+					blackPixelCount++;
+					// Calculate byte index and bit index
+					const byteIndex = y * bytesPerRow + Math.floor(x / 8);
+					const bitIndex = 7 - (x % 8); // MSB first (bit 7 = leftmost pixel)
+					bitmap[byteIndex] |= 1 << bitIndex;
+					
+					// Log first few black pixels for debugging
+					if (blackPixelCount <= 10) {
+						console.log(`[BITMAP]   Black pixel #${blackPixelCount} at [${x}, ${y}]: RGB(${r},${g},${b_val}) -> lum=${Math.round(luminance)} -> byteIndex=${byteIndex}, bitIndex=${bitIndex}, byte=0x${bitmap[byteIndex].toString(16).padStart(2, '0')}`);
+					}
+				} else {
+					whitePixelCount++;
+				}
 			}
 		}
 
-		// GS v 0 command — EXACT sequence Epson wants
-		const header = Buffer.from([
-			0x1D, 0x76, 0x30, 0x00,        // GS v 0 mode 0
-			bytesPerLine & 0xFF,            // xL
-			bytesPerLine >> 8,              // xH
-			height & 0xFF,                  // yL
-			height >> 8                     // yH
-		]);
+		console.log("[BITMAP] Pixel statistics:");
+		console.log("[BITMAP]   - Black pixels:", blackPixelCount);
+		console.log("[BITMAP]   - White pixels:", whitePixelCount);
+		console.log("[BITMAP]   - Transparent pixels:", transparentPixelCount);
+		console.log("[BITMAP]   - Total pixels:", width * height);
 
-		return Buffer.concat([header, bitmap]);
+		// Analyze bitmap data
+		const nonZeroBytes = bitmap.filter(b => b !== 0).length;
+		console.log("[BITMAP] Bitmap data analysis:");
+		console.log("[BITMAP]   - Non-zero bytes:", nonZeroBytes, "out of", bitmap.length, `(${(nonZeroBytes/bitmap.length*100).toFixed(1)}%)`);
+		console.log("[BITMAP]   - Zero bytes:", bitmap.length - nonZeroBytes);
+		
+		if (nonZeroBytes === 0) {
+			console.error("[BITMAP] ⚠️ WARNING: All bitmap bytes are zero! Image will print blank!");
+		} else {
+			const firstNonZero = bitmap.findIndex(b => b !== 0);
+			const lastNonZero = bitmap.length - 1 - [...bitmap].reverse().findIndex(b => b !== 0);
+			console.log("[BITMAP]   - First non-zero byte at index:", firstNonZero, `(row ${Math.floor(firstNonZero / bytesPerRow)}, byte ${firstNonZero % bytesPerRow})`);
+			console.log("[BITMAP]   - Last non-zero byte at index:", lastNonZero, `(row ${Math.floor(lastNonZero / bytesPerRow)}, byte ${lastNonZero % bytesPerRow})`);
+			
+			// Sample bitmap data
+			console.log("[BITMAP] Bitmap samples:");
+			console.log("[BITMAP]   - First row (0-", Math.min(16, bytesPerRow), "bytes):", Array.from(bitmap.slice(0, Math.min(16, bytesPerRow))).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+			if (height > 1) {
+				const middleRow = Math.floor(height / 2);
+				const middleRowStart = middleRow * bytesPerRow;
+				console.log(`[BITMAP]   - Middle row ${middleRow} (${middleRowStart}-${middleRowStart + Math.min(16, bytesPerRow)}):`, Array.from(bitmap.slice(middleRowStart, middleRowStart + Math.min(16, bytesPerRow))).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+			}
+			if (height > 2) {
+				const lastRowStart = (height - 1) * bytesPerRow;
+				console.log(`[BITMAP]   - Last row ${height-1} (${lastRowStart}-${lastRowStart + Math.min(16, bytesPerRow)}):`, Array.from(bitmap.slice(lastRowStart, lastRowStart + Math.min(16, bytesPerRow))).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+			}
+			
+			// Show some non-zero bytes with their binary representation
+			console.log("[BITMAP] Sample non-zero bytes:");
+			let shown = 0;
+			for (let i = 0; i < bitmap.length && shown < 10; i++) {
+				if (bitmap[i] !== 0) {
+					const row = Math.floor(i / bytesPerRow);
+					const col = i % bytesPerRow;
+					console.log(`[BITMAP]   Index ${i} (row ${row}, col ${col}): 0x${bitmap[i].toString(16).padStart(2, '0')} = ${bitmap[i].toString(2).padStart(8, '0')} (binary)`);
+					shown++;
+				}
+			}
+		}
+
+		// GS v 0 (raster bit image) - standard ESC/POS command for TM-T20II
+		// Format: GS v 0 m xL xH yL yH [bitmap data]
+		const xL = bytesPerRow & 0xff;
+		const xH = (bytesPerRow >> 8) & 0xff;
+		const yL = height & 0xff;
+		const yH = (height >> 8) & 0xff;
+		const m = 0x00; // normal mode (1x width, 1x height)
+
+		console.log("[BITMAP] ESC/POS command header:");
+		console.log("[BITMAP]   - Width:", bytesPerRow, "bytes =", `0x${bytesPerRow.toString(16)}`, `(xL=0x${xL.toString(16).padStart(2, '0')}, xH=0x${xH.toString(16).padStart(2, '0')})`);
+		console.log("[BITMAP]   - Height:", height, "dots =", `0x${height.toString(16)}`, `(yL=0x${yL.toString(16).padStart(2, '0')}, yH=0x${yH.toString(16).padStart(2, '0')})`);
+		console.log("[BITMAP]   - Mode:", m, "(normal)");
+		console.log("[BITMAP] Using GS v 0 (raster bit image) command");
+		
+		const header = Buffer.from([
+			0x1D, 0x76, 0x30, m,    // GS v 0 m
+			xL, xH, yL, yH          // width (bytes), height (dots)
+		]);
+		
+		const command = Buffer.concat([header, bitmap]);
+		
+		console.log("[BITMAP] Header bytes (8 bytes):", Array.from(header).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+		console.log("[BITMAP] Header as hex string:", header.toString('hex'));
+
+		console.log("[BITMAP] Full command:");
+		console.log("[BITMAP]   - Total size:", command.length, "bytes");
+		console.log("[BITMAP]   - Header size:", header.length, "bytes");
+		console.log("[BITMAP]   - Bitmap size:", bitmap.length, "bytes");
+		console.log("[BITMAP]   - First 32 bytes:", Array.from(command.slice(0, 32)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+		if (command.length > 32) {
+			console.log("[BITMAP]   - Last 32 bytes:", Array.from(command.slice(-32)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
+		}
+		
+		// CRITICAL CHECK: Verify bitmap data matches expected size
+		const expectedBitmapSize = bytesPerRow * height;
+		if (bitmap.length !== expectedBitmapSize) {
+			console.error(`[BITMAP] ⚠️ BITMAP SIZE MISMATCH! Expected ${expectedBitmapSize} bytes, got ${bitmap.length}`);
+		}
+		if (command.length !== 8 + expectedBitmapSize) {
+			console.error(`[BITMAP] ⚠️ COMMAND SIZE MISMATCH! Expected ${8 + expectedBitmapSize} bytes, got ${command.length}`);
+		} else {
+			console.log(`[BITMAP] ✓ Size validation passed: ${command.length} = 8 (header) + ${expectedBitmapSize} (bitmap)`);
+		}
+		
+		console.log("[BITMAP] ===== BITMAP CONVERSION END =====");
+		return command;
 	}
 }
 
@@ -624,24 +916,9 @@ export class Printer {
 
   async printMessage(content: MessageContent): Promise<void> {
     await this.ensureInitialized();
-
-    console.log(`[🧾] Formatting message...`);
     const commands = await this.formatter.formatMessage(content);
-    console.log(`[🧾] Message formatted, total size: ${commands.length} bytes`);
-    console.log(`[🧾] Command breakdown:`);
-    console.log(`[🧾]   First 50 bytes:`, Array.from(commands.slice(0, 50)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
-    if (commands.length > 50) {
-      console.log(`[🧾]   Last 50 bytes:`, Array.from(commands.slice(-50)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' '));
-    }
-    
-    console.log(`[🧾] Writing to printer adapter...`);
     await this.adapter!.write(commands);
-    console.log(`[🧾] Write completed`);
-
-    const size = commands.length < 100 
-        ? `${commands.length}B`
-        : `${(commands.length / 1024).toFixed(1)}KB`;
-      console.log(`[🧾] Message printed (${size})`);
+    console.log(`[🧾] Printed`);
   }
 
   async getStatus(): Promise<{ online: boolean }> {

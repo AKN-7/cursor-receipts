@@ -1,103 +1,262 @@
-import { createPrinter, type MessageContent } from "./lib/index";
+import { execSync } from "child_process";
+import { serve } from "bun";
+import { PNG } from "pngjs";
 
-let queue: MessageContent[] = [];
+interface PrintJob {
+  name?: string;
+  text?: string;
+  image?: {
+    name: string;
+    type: string;
+    data: Buffer;
+  };
+}
 
-const printer = createPrinter({ useUSB: true });
+let queue: PrintJob[] = [];
 
-function print(content: MessageContent) {
-  const preview = content.text?.slice(0, 50).replace(/\n/g, " ") || "[image]";
-  console.log("PRINTED:", preview);
+async function processImage(imageData: Buffer): Promise<Buffer> {
+  console.log("[IMAGE] Processing image buffer:", imageData.length, "bytes");
+  
+  // Decode PNG
+  let png: PNG;
+  try {
+    png = PNG.sync.read(imageData);
+    console.log("[IMAGE] PNG decoded:", png.width, "x", png.height);
+  } catch (err: any) {
+    console.error("[IMAGE] PNG decode failed:", err?.message || err);
+    throw new Error(`Failed to decode image: ${err?.message || err}`);
+  }
+  
+  // Resize if too wide (thermal printers are usually 384px wide)
+  const maxWidth = 384;
+  if (png.width > maxWidth) {
+    const ratio = maxWidth / png.width;
+    const newWidth = maxWidth;
+    const newHeight = Math.round(png.height * ratio);
+    const resized = new PNG({ width: newWidth, height: newHeight });
+    // Simple nearest-neighbor resize
+    for (let y = 0; y < newHeight; y++) {
+      for (let x = 0; x < newWidth; x++) {
+        const srcX = Math.floor(x / ratio);
+        const srcY = Math.floor(y / ratio);
+        const srcIdx = (srcY * png.width + srcX) * 4;
+        const dstIdx = (y * newWidth + x) * 4;
+        resized.data[dstIdx] = png.data[srcIdx];
+        resized.data[dstIdx + 1] = png.data[srcIdx + 1];
+        resized.data[dstIdx + 2] = png.data[srcIdx + 2];
+        resized.data[dstIdx + 3] = png.data[srcIdx + 3];
+      }
+    }
+    png.width = newWidth;
+    png.height = newHeight;
+    png.data = resized.data;
+  }
+  
+  // Convert to bitmap
+  const { width, height, data } = png;
+  const bytesPerRow = Math.ceil(width / 8);
+  const bitmap = Buffer.alloc(bytesPerRow * height);
+  
+  // Convert to 1bpp (MSB first)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const alpha = data[idx + 3];
+      
+      if (alpha < 128) continue; // Transparent = white
+      
+      // Grayscale conversion
+      const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+      const isBlack = luminance < 128;
+      
+      if (isBlack) {
+        const byteIndex = y * bytesPerRow + Math.floor(x / 8);
+        const bitIndex = 7 - (x % 8); // MSB first
+        bitmap[byteIndex] |= 1 << bitIndex;
+      }
+    }
+  }
+  
+  // GS v 0 command: GS v 0 m xL xH yL yH [bitmap]
+  const xL = bytesPerRow & 0xff;
+  const xH = (bytesPerRow >> 8) & 0xff;
+  const yL = height & 0xff;
+  const yH = (height >> 8) & 0xff;
+  const m = 0x00; // normal mode
+  
+  const header = Buffer.from([
+    0x1D, 0x76, 0x30, m,    // GS v 0 m
+    xL, xH, yL, yH          // width (bytes), height (dots)
+  ]);
+  
+  return Buffer.concat([header, bitmap]);
+}
+
+async function print(job: PrintJob) {
+  try {
+    console.log("[PRINT] Starting print job:", {
+      hasName: !!job.name,
+      hasText: !!job.text,
+      hasImage: !!job.image,
+      imageName: job.image?.name,
+      imageSize: job.image?.size
+    });
+    
+    // Build ESC/POS command buffer
+    const parts: Buffer[] = [];
+    
+    // Initialize printer
+    parts.push(Buffer.from([0x1b, 0x40])); // ESC @
+    
+    // Add text
+    let text = "";
+    if (job.name) text += `${job.name}\n\n`;
+    if (job.text) text += job.text;
+    if (text) {
+      parts.push(Buffer.from(text));
+      console.log("[PRINT] Added text:", text.slice(0, 50));
+    }
+    
+    // Add image if present
+    if (job.image) {
+      console.log("[PRINT] Processing image:", job.image.name, job.image.data.length, "bytes");
+      try {
+        parts.push(Buffer.from("\n")); // Line feed before image
+        const imageData = await processImage(job.image.data);
+        console.log("[PRINT] Image processed, ESC/POS size:", imageData.length, "bytes");
+        parts.push(imageData);
+        parts.push(Buffer.from("\n")); // Line feed after image
+      } catch (imgErr: any) {
+        console.error("[PRINT] Image processing failed:", imgErr?.message || imgErr);
+        console.error("[PRINT] Error stack:", imgErr?.stack);
+        parts.push(Buffer.from("\n[Image processing error]\n"));
+      }
+    }
+    
+    // Add newlines at end
+    parts.push(Buffer.from("\n\n\n\n\n\n"));
+    
+    // Combine all parts
+    const command = Buffer.concat(parts);
+    console.log("[PRINT] Total command size:", command.length, "bytes");
+    
+    // Send through lp -o raw
+    console.log("[PRINT] Sending to printer...");
+    execSync(`cat | lp -d EPSON_TM_T20II -o raw`, { input: command });
+    console.log("[PRINT] ✓ Print command sent successfully");
+    
+    const preview = job.text?.slice(0, 50).replace(/\n/g, " ") || job.image ? "[image]" : "blank";
+    console.log("PRINTED:", preview);
+  } catch (err: any) {
+    console.error("[PRINT] Print error:", err?.message || err);
+    console.error("[PRINT] Error stack:", err?.stack);
+  }
 }
 
 setInterval(async () => {
   if (queue.length > 0) {
-    const content = queue.shift()!;
-    console.log(`[🧾] Processing queue item (${queue.length} remaining)...`);
-    console.log(`[🧾] Content:`, JSON.stringify({ name: content.name, text: content.text?.slice(0, 50), hasImage: !!content.image }));
-    try {
-      // Ensure printer is initialized
-      await printer.initialize();
-      console.log(`[🧾] Printer initialized, printing...`);
-      const startTime = Date.now();
-      await Promise.race([
-        printer.printMessage(content),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("Print timeout after 30 seconds")), 30000)
-        )
-      ]);
-      const duration = Date.now() - startTime;
-      console.log(`[🧾] Print completed in ${duration}ms`);
-      print(content);
-    } catch (err: any) {
-      console.error("[🧾] Print error:", err);
-      console.error("[🧾] Error details:", err?.message);
-      if (err?.stack) console.error("[🧾] Stack:", err.stack);
-    }
-  } else {
-    // Log every minute that queue is empty (for debugging)
-    const now = new Date();
-    if (now.getSeconds() < 2) {
-      console.log(`[🧾] Queue empty, waiting for messages...`);
-    }
+    console.log("[QUEUE] ===== QUEUE PROCESSOR =====");
+    console.log("[QUEUE] Processing queue,", queue.length, "job(s) waiting");
+    const job = queue.shift()!;
+    console.log("[QUEUE] Job details:", {
+      hasName: !!job.name,
+      hasText: !!job.text,
+      hasImage: !!job.image,
+      imageName: job.image?.name
+    });
+    await print(job);
+    console.log("[QUEUE] ===== QUEUE PROCESSOR COMPLETE =====");
   }
-}, 8000); // one print every 8 sec = perfect pace
+}, 8000);   // one print every 8 sec = perfect pace
 
-// Initialize printer on startup
-printer.initialize().then(() => {
-  printer.printMessage({
-    text: "🧾 PRINTER READY – café mode activated 🧾",
-  }).catch(console.error);
-}).catch(console.error);
+print({ text: "🧾 PRINTER READY – café mode activated 🧾" });
 
-Bun.serve({
+serve({
   port: 9999,
   async fetch(req) {
-    console.log(`[🧾] ${req.method} ${req.url}`);
     const url = new URL(req.url);
+    console.log("[HTTP] ===== REQUEST =====");
+    console.log("[HTTP] Method:", req.method);
+    console.log("[HTTP] Path:", url.pathname);
+    console.log("[HTTP] URL:", req.url);
     
-    // Handle POST requests FIRST (before GET check)
+    // Handle POST /chat first (before GET route catches it)
     if (url.pathname === "/chat" && req.method === "POST") {
-      console.log("[🧾] ✅ POST /chat detected!");
-      console.log("[🧾] Content-Type:", req.headers.get("content-type"));
-      console.log("[🧾] Content-Length:", req.headers.get("content-length"));
+      console.log("[HTTP] ✓ POST /chat route matched");
+      console.log("[HTTP] Content-Type:", req.headers.get("content-type"));
+      console.log("[HTTP] Content-Length:", req.headers.get("content-length"));
       
       try {
-        console.log("[🧾] Parsing formData...");
-        const fd = await req.formData();
-        console.log("[🧾] ✅ FormData parsed successfully");
+        console.log("[HTTP] Starting formData() parse...");
+        const fd = await Promise.race([
+          req.formData(),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("formData() timeout after 10s")), 10000)
+          )
+        ]) as FormData;
+        console.log("[HTTP] ✓ Form data parsed successfully");
         
         const name = fd.get("name") as string | null;
         const text = fd.get("text") as string | null;
-        const imageFile = fd.get("image") as File | null;
+        const image = fd.get("image") as File | null;
         
-        console.log(`[🧾] Fields extracted - name: "${name || 'empty'}", text: "${text?.slice(0, 30) || 'empty'}", image: ${imageFile ? `${imageFile.size}B` : "none"}`);
+        console.log("[QUEUE] ===== FORM SUBMISSION =====");
+        console.log("[QUEUE] Received form data:", {
+          name: name || "(none)",
+          text: text || "(none)",
+          hasImage: !!image,
+          imageName: image?.name,
+          imageSize: image?.size,
+          imageType: image?.type
+        });
         
-        // Limit image size to 5MB
-        if (imageFile && imageFile.size > 5 * 1024 * 1024) {
-          console.error(`[🧾] Image too large: ${imageFile.size} bytes (max 5MB)`);
-          return new Response("Image too large (max 5MB)", { status: 400 });
+        // Convert File to Buffer if present (File objects don't serialize well in queues)
+        let imageData: { name: string; type: string; data: Buffer } | undefined;
+        if (image && image.size > 0) {
+          try {
+            console.log("[QUEUE] Converting image File to Buffer...");
+            const arrayBuffer = await image.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            console.log("[QUEUE] ✓ Image converted to buffer:", buffer.length, "bytes");
+            imageData = {
+              name: image.name,
+              type: image.type,
+              data: buffer
+            };
+          } catch (err: any) {
+            console.error("[QUEUE] ✗ Failed to convert image:", err?.message || err);
+            console.error("[QUEUE] Error stack:", err?.stack);
+          }
         }
         
-        const content: MessageContent = {
+        const job: PrintJob = {
           name: name || undefined,
           text: text || undefined,
-          image: imageFile && imageFile.size > 0 ? imageFile : undefined,
+          image: imageData,
         };
         
-        if (!content.text && !content.image) {
-          content.text = "blank print";
+        if (!job.text && !job.image) {
+          job.text = "blank print";
         }
         
-        queue.push(content);
-        console.log(`[🧾] ✅✅✅ QUEUED! Queue size now: ${queue.length}`);
-        console.log(`[🧾] Message preview:`, content.text?.slice(0, 50) || "[image]");
-        
-        return new Response("queued", { status: 200 });
+        console.log("[QUEUE] Job created:", {
+          hasName: !!job.name,
+          hasText: !!job.text,
+          hasImage: !!job.image,
+          imageName: job.image?.name
+        });
+        console.log("[QUEUE] Adding job to queue. Current queue length:", queue.length);
+        queue.push(job);
+        console.log("[QUEUE] ✓ Job added! Queue length now:", queue.length);
+        console.log("[QUEUE] ===== FORM SUBMISSION COMPLETE =====");
+        return new Response("queued");
       } catch (err: any) {
-        console.error("[🧾] ❌❌❌ ERROR processing form data:", err);
-        console.error("[🧾] Error message:", err?.message);
-        console.error("[🧾] Error stack:", err?.stack);
-        return new Response(`error: ${err?.message}`, { status: 500 });
+        console.error("[QUEUE] ✗ Error processing form data:", err);
+        console.error("[QUEUE] Error stack:", err?.stack);
+        return new Response(`error processing form: ${err?.message || err}`, { status: 500 });
       }
     }
     
@@ -130,10 +289,10 @@ Bun.serve({
       `, { headers: { "Content-Type": "text/html" } });
     }
 
+    console.log("[HTTP] No matching route, returning 'ok'");
     return new Response("ok");
   },
 });
 
 console.log("OPEN THIS ON ANY PHONE → http://YOUR-MAC-LOCAL-IP:9999");
 console.log("Find your IP: ifconfig en0 | grep inet → usually 192.168.x.x");
-
