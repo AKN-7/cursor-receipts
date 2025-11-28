@@ -1,6 +1,9 @@
 import { execSync } from "child_process";
 import { serve } from "bun";
 import { PNG } from "pngjs";
+import sharp from "sharp";
+import { readFileSync, existsSync } from "fs";
+import { join } from "path";
 
 interface PrintJob {
   name?: string;
@@ -14,42 +17,103 @@ interface PrintJob {
 
 let queue: PrintJob[] = [];
 
+// Load logo once at startup
+let logoBuffer: Buffer | null = null;
+const logoPath = join(process.cwd(), "assets", "logo.png");
+if (existsSync(logoPath)) {
+  try {
+    logoBuffer = readFileSync(logoPath);
+    console.log("[LOGO] Logo loaded from assets/logo.png");
+  } catch (err: any) {
+    console.warn("[LOGO] Failed to load logo:", err?.message || err);
+  }
+} else {
+  console.log("[LOGO] No logo found at assets/logo.png (optional - skipping)");
+  console.log("[LOGO] To add a logo, place logo.png in the assets/ folder");
+}
+
 async function processImage(imageData: Buffer): Promise<Buffer> {
   console.log("[IMAGE] Processing image buffer:", imageData.length, "bytes");
+  
+  // Get image metadata first to check orientation and dimensions
+  let metadata: sharp.Metadata;
+  try {
+    metadata = await sharp(imageData).metadata();
+    console.log("[IMAGE] Original metadata:", {
+      width: metadata.width,
+      height: metadata.height,
+      orientation: metadata.orientation,
+      format: metadata.format
+    });
+  } catch (err: any) {
+    console.error("[IMAGE] Failed to read metadata:", err?.message || err);
+    throw new Error(`Failed to read image metadata: ${err?.message || err}`);
+  }
+  
+  // Printer width (thermal printers - this one is 576px wide)
+  const printerWidth = 576;
+  
+  // Use sharp to handle rotation, resizing, and conversion all in one go
+  // This ensures high-quality scaling and proper EXIF orientation handling
+  let pngBuffer: Buffer;
+  try {
+    console.log("[IMAGE] Processing with sharp (rotation + resize + convert)...");
+    
+    let sharpInstance = sharp(imageData)
+      .rotate(); // Auto-rotates based on EXIF orientation (fixes iPhone rotation)
+    
+    // Get dimensions after rotation to determine orientation
+    const rotatedMetadata = await sharpInstance.metadata();
+    const isPortrait = (rotatedMetadata.height || 0) > (rotatedMetadata.width || 0);
+    
+    console.log(`[IMAGE] After rotation: ${rotatedMetadata.width}x${rotatedMetadata.height} (${isPortrait ? 'PORTRAIT' : 'LANDSCAPE'})`);
+    
+    // Resize logic:
+    // - Portrait: ALWAYS resize to fill width (384px) - FORCE IT BIGGER!
+    // - Landscape: Resize to fit width (scale down if too wide, scale up if needed)
+    if (isPortrait) {
+      // Portrait: FORCE to printer width, maintain aspect ratio
+      console.log(`[IMAGE] Portrait image: FORCING resize to ${printerWidth}px width (making it BIGGER!)`);
+      sharpInstance = sharpInstance.resize(printerWidth, null, {
+        withoutEnlargement: false, // CRITICAL: Allow scaling UP for small images
+        fit: 'fill' // Fill the width exactly
+      });
+    } else {
+      // Landscape: Resize to fit width
+      if ((rotatedMetadata.width || 0) > printerWidth) {
+        console.log(`[IMAGE] Landscape too wide: scaling down to ${printerWidth}px`);
+        sharpInstance = sharpInstance.resize(printerWidth, null, {
+          withoutEnlargement: false,
+          fit: 'inside'
+        });
+      } else if ((rotatedMetadata.width || 0) >= printerWidth * 0.7) {
+        console.log(`[IMAGE] Landscape close to width: scaling up to ${printerWidth}px`);
+        sharpInstance = sharpInstance.resize(printerWidth, null, {
+          withoutEnlargement: false,
+          fit: 'inside'
+        });
+      } else {
+        console.log(`[IMAGE] Landscape too small: keeping original size`);
+      }
+    }
+    
+    // Convert to PNG
+    pngBuffer = await sharpInstance.png().toBuffer();
+    console.log("[IMAGE] Final processed image:", pngBuffer.length, "bytes");
+  } catch (err: any) {
+    console.error("[IMAGE] Sharp processing failed:", err?.message || err);
+    throw new Error(`Failed to process image: ${err?.message || err}`);
+  }
   
   // Decode PNG
   let png: PNG;
   try {
-    png = PNG.sync.read(imageData);
-    console.log("[IMAGE] PNG decoded:", png.width, "x", png.height);
+    png = PNG.sync.read(pngBuffer);
+    console.log("[IMAGE] PNG decoded - FINAL SIZE:", png.width, "x", png.height);
+    console.log(`[IMAGE] Width matches printer width: ${png.width === printerWidth ? 'YES ✓' : `NO ✗ (${png.width}px vs ${printerWidth}px)`}`);
   } catch (err: any) {
     console.error("[IMAGE] PNG decode failed:", err?.message || err);
-    throw new Error(`Failed to decode image: ${err?.message || err}`);
-  }
-  
-  // Resize if too wide (thermal printers are usually 384px wide)
-  const maxWidth = 384;
-  if (png.width > maxWidth) {
-    const ratio = maxWidth / png.width;
-    const newWidth = maxWidth;
-    const newHeight = Math.round(png.height * ratio);
-    const resized = new PNG({ width: newWidth, height: newHeight });
-    // Simple nearest-neighbor resize
-    for (let y = 0; y < newHeight; y++) {
-      for (let x = 0; x < newWidth; x++) {
-        const srcX = Math.floor(x / ratio);
-        const srcY = Math.floor(y / ratio);
-        const srcIdx = (srcY * png.width + srcX) * 4;
-        const dstIdx = (y * newWidth + x) * 4;
-        resized.data[dstIdx] = png.data[srcIdx];
-        resized.data[dstIdx + 1] = png.data[srcIdx + 1];
-        resized.data[dstIdx + 2] = png.data[srcIdx + 2];
-        resized.data[dstIdx + 3] = png.data[srcIdx + 3];
-      }
-    }
-    png.width = newWidth;
-    png.height = newHeight;
-    png.data = resized.data;
+    throw new Error(`Failed to decode PNG: ${err?.message || err}`);
   }
   
   // Convert to bitmap
@@ -111,24 +175,68 @@ async function print(job: PrintJob) {
     // Initialize printer
     parts.push(Buffer.from([0x1b, 0x40])); // ESC @
     
-    // Add text
-    let text = "";
-    if (job.name) text += `${job.name}\n\n`;
-    if (job.text) text += job.text;
-    if (text) {
-      parts.push(Buffer.from(text));
-      console.log("[PRINT] Added text:", text.slice(0, 50));
+    // Order: Logo → Text → Image (with minimal spacing)
+    
+    // 1. Add logo first (if logo exists and image is present)
+    if (logoBuffer && job.image) {
+      try {
+        console.log("[PRINT] Adding logo...");
+        parts.push(Buffer.from("\n")); // Minimal spacing before logo
+        
+        // Center the logo
+        parts.push(Buffer.from([0x1b, 0x61, 0x01])); // ESC a 1 (center)
+        
+        const logoData = await processImage(logoBuffer);
+        console.log("[PRINT] Logo processed, ESC/POS size:", logoData.length, "bytes");
+        parts.push(logoData);
+        
+        // Reset alignment to left after logo
+        parts.push(Buffer.from([0x1b, 0x61, 0x00])); // ESC a 0 (left)
+        parts.push(Buffer.from("\n")); // Minimal spacing after logo
+      } catch (logoErr: any) {
+        console.error("[PRINT] Logo processing failed:", logoErr?.message || logoErr);
+        // Continue even if logo fails
+      }
     }
     
-    // Add image if present
+    // 2. Add text (between logo and image) - styled for café receipts
+    if (job.name || job.text) {
+      // Name: Bold, larger, centered
+      if (job.name) {
+        parts.push(Buffer.from([0x1b, 0x61, 0x01])); // Center align
+        parts.push(Buffer.from([0x1b, 0x45, 0x01])); // Bold ON
+        parts.push(Buffer.from([0x1d, 0x21, 0x11])); // Double height + width (GS !)
+        parts.push(Buffer.from(job.name));
+        parts.push(Buffer.from([0x1d, 0x21, 0x00])); // Normal size
+        parts.push(Buffer.from([0x1b, 0x45, 0x00])); // Bold OFF
+        parts.push(Buffer.from([0x1b, 0x61, 0x00])); // Left align
+        parts.push(Buffer.from("\n"));
+      }
+      
+      // Text: Normal size, left aligned
+      if (job.text) {
+        parts.push(Buffer.from(job.text));
+        parts.push(Buffer.from("\n"));
+      }
+      
+      console.log("[PRINT] Added styled text");
+    }
+    
+    // 3. Add image last
     if (job.image) {
       console.log("[PRINT] Processing image:", job.image.name, job.image.data.length, "bytes");
       try {
-        parts.push(Buffer.from("\n")); // Line feed before image
+        // Center the image using ESC/POS alignment command
+        // ESC a 1 = center alignment
+        parts.push(Buffer.from([0x1b, 0x61, 0x01])); // ESC a 1 (center)
+        
         const imageData = await processImage(job.image.data);
         console.log("[PRINT] Image processed, ESC/POS size:", imageData.length, "bytes");
         parts.push(imageData);
-        parts.push(Buffer.from("\n")); // Line feed after image
+        
+        // Reset alignment to left after image
+        parts.push(Buffer.from([0x1b, 0x61, 0x00])); // ESC a 0 (left)
+        parts.push(Buffer.from("\n")); // Minimal spacing after image
       } catch (imgErr: any) {
         console.error("[PRINT] Image processing failed:", imgErr?.message || imgErr);
         console.error("[PRINT] Error stack:", imgErr?.stack);
