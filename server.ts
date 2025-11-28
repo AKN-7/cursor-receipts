@@ -68,33 +68,23 @@ async function processImage(imageData: Buffer): Promise<Buffer> {
     
     console.log(`[IMAGE] After rotation: ${rotatedMetadata.width}x${rotatedMetadata.height} (${isPortrait ? 'PORTRAIT' : 'LANDSCAPE'})`);
     
-    // Resize logic:
-    // - Portrait: ALWAYS resize to fill width (384px) - FORCE IT BIGGER!
-    // - Landscape: Resize to fit width (scale down if too wide, scale up if needed)
+    // Resize logic: Always preserve aspect ratio
+    // - Portrait: Scale to fill width (576px), height scales proportionally
+    // - Landscape: Scale to fit width (576px), height scales proportionally
     if (isPortrait) {
-      // Portrait: FORCE to printer width, maintain aspect ratio
-      console.log(`[IMAGE] Portrait image: FORCING resize to ${printerWidth}px width (making it BIGGER!)`);
+      // Portrait: Scale to printer width, maintain aspect ratio
+      console.log(`[IMAGE] Portrait image: scaling to ${printerWidth}px width (preserving aspect ratio)`);
       sharpInstance = sharpInstance.resize(printerWidth, null, {
-        withoutEnlargement: false, // CRITICAL: Allow scaling UP for small images
-        fit: 'fill' // Fill the width exactly
+        withoutEnlargement: false,
+        fit: 'inside' // Preserves aspect ratio
       });
     } else {
-      // Landscape: Resize to fit width
-      if ((rotatedMetadata.width || 0) > printerWidth) {
-        console.log(`[IMAGE] Landscape too wide: scaling down to ${printerWidth}px`);
-        sharpInstance = sharpInstance.resize(printerWidth, null, {
-          withoutEnlargement: false,
-          fit: 'inside'
-        });
-      } else if ((rotatedMetadata.width || 0) >= printerWidth * 0.7) {
-        console.log(`[IMAGE] Landscape close to width: scaling up to ${printerWidth}px`);
-        sharpInstance = sharpInstance.resize(printerWidth, null, {
-          withoutEnlargement: false,
-          fit: 'inside'
-        });
-      } else {
-        console.log(`[IMAGE] Landscape too small: keeping original size`);
-      }
+      // Landscape: Scale to fit width, maintain aspect ratio
+      console.log(`[IMAGE] Landscape image: scaling to ${printerWidth}px width (preserving aspect ratio)`);
+      sharpInstance = sharpInstance.resize(printerWidth, null, {
+        withoutEnlargement: false,
+        fit: 'inside' // Preserves aspect ratio
+      });
     }
     
     // Convert to PNG
@@ -372,14 +362,205 @@ serve({
     if (url.pathname === "/" || url.pathname === "/chat") {
       return new Response(`
 <!DOCTYPE html>
-<html style="font-family:system-ui;background:#000;color:#fff;height:100vh;margin:0;display:grid;place-items:center">
-  <form method="POST" enctype="multipart/form-data" style="background:#111;padding:2rem;border-radius:1rem;width:90%;max-width:420px">
-    <h1 style="text-align:center">Send to Printer 🧾</h1>
-    <input name="name" placeholder="Your name (optional)" style="width:100%;padding:1rem;margin:0.5rem 0;font-size:1.2rem;border-radius:0.5rem;border:none">
-    <textarea name="text" placeholder="Message" rows="4" style="width:100%;padding:1rem;margin:0.5rem 0;font-size:1.2rem;border-radius:0.5rem;border:none"></textarea>
-    <input type="file" name="image" accept="image/*" style="width:100%;padding:1rem;margin:0.5rem 0">
-    <button type="submit" style="width:100%;padding:1rem;font-size:1.5rem;background:#0f0;color:#000;border:none;border-radius:0.5rem">PRINT IT</button>
-  </form>
+<html lang="en-US" data-theme="dark" style="color-scheme: dark;">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Send to Printer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    :root {
+      --theme-bg: #14120b;
+      --theme-text: #E4E4E4;
+      --theme-card: #1a1810;
+      --theme-border: hsl(0, 0%, 20%);
+      --theme-border-hover: hsl(0, 0%, 25%);
+      --theme-input-bg: #1a1810;
+      --theme-button-bg: #E4E4E4;
+      --theme-button-text: #14120b;
+      --theme-button-hover: #f5f5f5;
+      --theme-text-sec: rgba(228, 228, 228, 0.7);
+    }
+    
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow-x: hidden;
+      height: 100%;
+    }
+    
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--theme-bg);
+      color: var(--theme-text);
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      box-sizing: border-box;
+      overflow-y: auto;
+    }
+    
+    .container {
+      width: 100%;
+      max-width: 420px;
+      box-sizing: border-box;
+      padding: 0.5rem;
+    }
+    
+    .card {
+      background: var(--theme-card);
+      border: 1px solid var(--theme-border);
+      border-radius: 10px;
+      padding: 1rem;
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.14), 0 14px 32px rgba(0, 0, 0, 0.1);
+      box-sizing: border-box;
+      width: 100%;
+    }
+    
+    h1 {
+      font-size: 1.125rem;
+      font-weight: 600;
+      text-align: center;
+      margin-bottom: 0.75rem;
+      margin-top: 0;
+      color: var(--theme-text);
+    }
+    
+    .form-group {
+      margin-bottom: 0.625rem;
+    }
+    
+    label {
+      display: block;
+      font-size: 0.875rem;
+      color: var(--theme-text-sec);
+      margin-bottom: 0.5rem;
+      font-weight: 500;
+    }
+    
+    input[type="text"],
+    textarea {
+      width: 100%;
+      padding: 0.75rem;
+      font-size: 0.9375rem;
+      background: var(--theme-input-bg);
+      border: 1px solid var(--theme-border);
+      border-radius: 6px;
+      color: var(--theme-text);
+      font-family: inherit;
+      transition: border-color 0.2s, background-color 0.2s;
+      box-sizing: border-box;
+    }
+    
+    input[type="text"]:focus,
+    textarea:focus {
+      outline: none;
+      border-color: var(--theme-border-hover);
+      background: #1f1d15;
+    }
+    
+    input[type="text"]::placeholder,
+    textarea::placeholder {
+      color: var(--theme-text-sec);
+    }
+    
+    textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+    
+    input[type="file"] {
+      width: 100%;
+      padding: 0.75rem;
+      font-size: 0.875rem;
+      background: var(--theme-input-bg);
+      border: 1px solid var(--theme-border);
+      border-radius: 6px;
+      color: var(--theme-text);
+      cursor: pointer;
+      transition: border-color 0.2s;
+      box-sizing: border-box;
+    }
+    
+    input[type="file"]:hover {
+      border-color: var(--theme-border-hover);
+    }
+    
+    input[type="file"]::file-selector-button {
+      padding: 0.5rem 1rem;
+      margin-right: 0.75rem;
+      background: var(--theme-button-bg);
+      color: var(--theme-button-text);
+      border: none;
+      border-radius: 4px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    
+    input[type="file"]::file-selector-button:hover {
+      background: var(--theme-button-hover);
+    }
+    
+    button[type="submit"] {
+      width: 100%;
+      padding: 0.875rem 1.5rem;
+      font-size: 0.9375rem;
+      font-weight: 500;
+      background: var(--theme-button-bg);
+      color: var(--theme-button-text);
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background-color 0.2s, transform 0.1s;
+      margin-top: 0.25rem;
+      box-sizing: border-box;
+    }
+    
+    button[type="submit"]:hover {
+      background: var(--theme-button-hover);
+    }
+    
+    button[type="submit"]:active {
+      transform: scale(0.98);
+    }
+    
+    .helper-text {
+      font-size: 0.75rem;
+      color: var(--theme-text-sec);
+      margin-top: 0.25rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>Send to Printer 🧾</h1>
+      <form method="POST" enctype="multipart/form-data">
+        <div class="form-group">
+          <label for="name">Your name</label>
+          <input type="text" id="name" name="name" placeholder="Optional">
+        </div>
+        <div class="form-group">
+          <label for="text">Message</label>
+          <textarea id="text" name="text" placeholder="What are you building?"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="image">Photo</label>
+          <input type="file" id="image" name="image" accept="image/*">
+          <div class="helper-text">Upload a photo from your phone</div>
+        </div>
+        <button type="submit">PRINT IT</button>
+      </form>
+    </div>
+  </div>
   <script>
     document.querySelector('form').onsubmit = async e => {
       e.preventDefault();
@@ -388,11 +569,28 @@ serve({
         alert("Add text or photo!");
         return;
       }
-      await fetch("/chat", {method:"POST",body:fd});
-      alert("Printing in a few seconds! 🧾");
-      e.target.reset();
+      const button = e.target.querySelector('button[type="submit"]');
+      const originalText = button.textContent;
+      button.textContent = "Printing...";
+      button.disabled = true;
+      try {
+        await fetch("/chat", {method:"POST",body:fd});
+        button.textContent = "Queued! 🧾";
+        setTimeout(() => {
+          button.textContent = originalText;
+          button.disabled = false;
+        }, 2000);
+        e.target.reset();
+      } catch (err) {
+        button.textContent = "Error - Try again";
+        button.disabled = false;
+        setTimeout(() => {
+          button.textContent = originalText;
+        }, 2000);
+      }
     };
   </script>
+</body>
 </html>
       `, { headers: { "Content-Type": "text/html" } });
     }
