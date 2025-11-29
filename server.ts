@@ -106,12 +106,12 @@ async function processImage(imageData: Buffer): Promise<Buffer> {
     throw new Error(`Failed to decode PNG: ${err?.message || err}`);
   }
   
-  // Convert to bitmap
+  // Convert to bitmap with Floyd-Steinberg dithering for better grayscale simulation
   const { width, height, data } = png;
   const bytesPerRow = Math.ceil(width / 8);
-  const bitmap = Buffer.alloc(bytesPerRow * height);
   
-  // Convert to 1bpp (MSB first)
+  // Step 1: Convert RGBA to grayscale array
+  const grayscale = new Float32Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 4;
@@ -120,11 +120,53 @@ async function processImage(imageData: Buffer): Promise<Buffer> {
       const b = data[idx + 2];
       const alpha = data[idx + 3];
       
-      if (alpha < 128) continue; // Transparent = white
+      if (alpha < 128) {
+        // Transparent = white (255)
+        grayscale[y * width + x] = 255;
+      } else {
+        // Grayscale conversion (0-255)
+        grayscale[y * width + x] = 0.299 * r + 0.587 * g + 0.114 * b;
+      }
+    }
+  }
+  
+  // Step 2: Apply Floyd-Steinberg dithering
+  // This distributes quantization errors to neighboring pixels
+  // to create the illusion of grayscale with only black/white pixels
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const oldPixel = grayscale[idx];
       
-      // Grayscale conversion
-      const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-      const isBlack = luminance < 128;
+      // Quantize to black (0) or white (255)
+      const newPixel = oldPixel < 128 ? 0 : 255;
+      grayscale[idx] = newPixel;
+      
+      // Calculate quantization error
+      const error = oldPixel - newPixel;
+      
+      // Distribute error to neighboring pixels (Floyd-Steinberg weights)
+      if (x + 1 < width) {
+        grayscale[idx + 1] += error * (7 / 16); // Right
+      }
+      if (x > 0 && y + 1 < height) {
+        grayscale[idx + width - 1] += error * (3 / 16); // Bottom-left
+      }
+      if (y + 1 < height) {
+        grayscale[idx + width] += error * (5 / 16); // Bottom
+      }
+      if (x + 1 < width && y + 1 < height) {
+        grayscale[idx + width + 1] += error * (1 / 16); // Bottom-right
+      }
+    }
+  }
+  
+  // Step 3: Convert dithered grayscale to 1bpp bitmap (MSB first)
+  const bitmap = Buffer.alloc(bytesPerRow * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const isBlack = grayscale[idx] < 128;
       
       if (isBlack) {
         const byteIndex = y * bytesPerRow + Math.floor(x / 8);

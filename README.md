@@ -1,6 +1,6 @@
 # Thermal Printer Server (USB)
 
-A simple server for printing to USB thermal printers. Similar to a "fax machine" but fast, cheap, and fun!
+A simple server for printing to USB thermal printers.
 
 ## Setup
 
@@ -36,8 +36,6 @@ A simple server for printing to USB thermal printers. Similar to a "fax machine"
 ## USB Setup Notes
 
 - **macOS**: Should work out of the box
-- **Linux**: Install `libudev-dev`: `sudo apt-get install build-essential libudev-dev`
-- **Windows**: Use Zadig to install WinUSB driver for your USB device
 
 ## Supported Printers
 
@@ -53,4 +51,5 @@ Any ESC/POS compatible thermal printer, including:
 3. Type a message or upload an image
 4. Click "PRINT IT"
 5. Your message will be queued and printed in a few seconds!
+
 
