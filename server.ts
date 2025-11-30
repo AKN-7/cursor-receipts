@@ -3,7 +3,7 @@ import { serve } from "bun";
 import { PNG } from "pngjs";
 import sharp from "sharp";
 import { readFileSync, existsSync } from "fs";
-import { join } from "path";
+import { join, extname } from "path";
 
 interface PrintJob {
   name?: string;
@@ -610,6 +610,30 @@ serve({
       }
     }
     
+    // Handle assets (images)
+    if (url.pathname.startsWith("/assets/")) {
+      const assetPath = join(process.cwd(), url.pathname);
+      if (existsSync(assetPath)) {
+        try {
+          const file = readFileSync(assetPath);
+          const ext = extname(assetPath).toLowerCase();
+          const contentType = ext === ".png" ? "image/png" : 
+                             ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" :
+                             ext === ".gif" ? "image/gif" : "application/octet-stream";
+          return new Response(file, {
+            headers: {
+              "Content-Type": contentType,
+              ...corsHeaders
+            }
+          });
+        } catch (err: any) {
+          console.error("[HTTP] Error serving asset:", err?.message || err);
+          return new Response("Asset not found", { status: 404, headers: corsHeaders });
+        }
+      }
+      return new Response("Asset not found", { status: 404, headers: corsHeaders });
+    }
+    
     // Handle GET requests (show form)
     if (url.pathname === "/" || url.pathname === "/chat") {
       return new Response(`
@@ -662,7 +686,7 @@ serve({
     
     .container {
       width: 100%;
-      max-width: 420px;
+      max-width: 600px;
       box-sizing: border-box;
       padding: 0.5rem;
     }
@@ -678,6 +702,19 @@ serve({
     }
     
     h1 {
+      font-size: 3.5rem;
+      font-weight: 600;
+      text-align: center;
+      margin-bottom: 1.5rem;
+      margin-top: -2rem;
+      color: var(--theme-text);
+      letter-spacing: -0.02em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      font-family: "Courier New", Courier, "Lucida Console", Monaco, monospace;
+    }
+    
+    h2 {
       font-size: 1.125rem;
       font-weight: 600;
       text-align: center;
@@ -790,12 +827,129 @@ serve({
       color: var(--theme-text-sec);
       margin-top: 0.25rem;
     }
+    
+    /* Postcards behind the main card */
+    .postcards-container {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 100%;
+      max-width: 800px;
+      height: 100vh;
+      pointer-events: none;
+      z-index: 1;
+      display: flex;
+      gap: 3rem;
+      justify-content: center;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    
+    .postcard {
+      width: auto;
+      height: auto;
+      max-width: 200px;
+      max-height: 600px;
+      background: var(--theme-card);
+      border: 1px solid var(--theme-border);
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+      overflow: hidden;
+      position: relative;
+      transform-style: preserve-3d;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .postcard:nth-child(1) {
+      transform: rotate(-25deg) translateX(-80px) translateY(-30px);
+    }
+    
+    .postcard:nth-child(2) {
+      transform: rotate(5deg) translateY(-20px);
+      z-index: 1;
+    }
+    
+    .postcard:nth-child(3) {
+      transform: rotate(25deg) translateX(80px) translateY(-30px);
+    }
+    
+    .postcard img {
+      width: auto;
+      height: auto;
+      max-width: 100%;
+      max-height: 600px;
+      display: block;
+      object-fit: contain;
+    }
+    
+    .postcard::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.1) 100%);
+      pointer-events: none;
+    }
+    
+    .container {
+      position: relative;
+      z-index: 20;
+    }
+    
+    /* Mobile: stack postcards vertically */
+    @media (max-width: 768px) {
+      .postcards-container {
+        position: relative;
+        top: auto;
+        left: auto;
+        transform: none;
+        height: auto;
+        flex-direction: column;
+        padding: 2rem 1rem;
+        margin-bottom: 2rem;
+        pointer-events: auto;
+      }
+      
+      .postcard {
+        width: auto;
+        max-width: 200px;
+        max-height: 400px;
+        transform: none !important;
+        margin-bottom: 1.5rem;
+      }
+      
+      .postcard img {
+        max-height: 400px;
+      }
+      
+      body {
+        flex-direction: column;
+        padding-bottom: 2rem;
+      }
+    }
   </style>
 </head>
 <body>
+  <div class="postcards-container">
+    <div class="postcard">
+      <img src="/assets/3.jpeg" alt="Example print 3">
+    </div>
+    <div class="postcard">
+      <img src="/assets/2.jpeg" alt="Example print 2">
+    </div>
+    <div class="postcard">
+      <img src="/assets/1.jpeg" alt="Example print 1">
+    </div>
+  </div>
   <div class="container">
+    <h1 style="text-align: center; font-size: 3.5rem; font-weight: 600; color: var(--theme-text); margin-bottom: 1.5rem; margin-top: -2rem; letter-spacing: -0.02em; text-transform: uppercase; white-space: nowrap; font-family: 'Courier New', Courier, 'Lucida Console', Monaco, monospace;">CURSOR FOR PRINTING</h1>
     <div class="card">
-      <h1>Send to Printer 🧾</h1>
+      <h2 style="font-size: 1.125rem; font-weight: 600; text-align: center; margin-bottom: 0.75rem; margin-top: 0; color: var(--theme-text);">Send to Printer 🧾</h2>
       <p style="text-align: center; font-size: 0.875rem; color: var(--theme-text-sec); margin-bottom: 1rem;">Find Ameen at the printer to the right of the projector screen!</p>
       <form method="POST" enctype="multipart/form-data">
         <div class="form-group">
