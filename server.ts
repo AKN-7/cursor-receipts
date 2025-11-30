@@ -32,6 +32,149 @@ if (existsSync(logoPath)) {
   console.log("[LOGO] To add a logo, place logo.png in the assets/ folder");
 }
 
+async function processLogo(imageData: Buffer): Promise<Buffer> {
+  console.log("[LOGO] Processing logo buffer:", imageData.length, "bytes");
+  
+  // Get image metadata first to check orientation and dimensions
+  let metadata: sharp.Metadata;
+  try {
+    metadata = await sharp(imageData).metadata();
+    console.log("[LOGO] Original metadata:", {
+      width: metadata.width,
+      height: metadata.height,
+      orientation: metadata.orientation,
+      format: metadata.format
+    });
+  } catch (err: any) {
+    console.error("[LOGO] Failed to read metadata:", err?.message || err);
+    throw new Error(`Failed to read logo metadata: ${err?.message || err}`);
+  }
+  
+  // Logo max width - smaller than printer width but bigger than before (about 43% of printer width)
+  const maxLogoWidth = 250;
+  
+  // Use sharp to handle rotation, resizing, and conversion all in one go
+  let pngBuffer: Buffer;
+  try {
+    console.log("[LOGO] Processing with sharp (rotation + resize + convert)...");
+    
+    let sharpInstance = sharp(imageData)
+      .rotate(); // Auto-rotates based on EXIF orientation
+    
+    // Get dimensions after rotation
+    const rotatedMetadata = await sharpInstance.metadata();
+    const isPortrait = (rotatedMetadata.height || 0) > (rotatedMetadata.width || 0);
+    
+    console.log(`[LOGO] After rotation: ${rotatedMetadata.width}x${rotatedMetadata.height} (${isPortrait ? 'PORTRAIT' : 'LANDSCAPE'})`);
+    
+    // Scale logo to maxLogoWidth, preserving aspect ratio
+    console.log(`[LOGO] Scaling logo to max ${maxLogoWidth}px width (preserving aspect ratio)`);
+    sharpInstance = sharpInstance.resize(maxLogoWidth, null, {
+      withoutEnlargement: false,
+      fit: 'inside' // Preserves aspect ratio
+    });
+    
+    // Convert to PNG
+    pngBuffer = await sharpInstance.png().toBuffer();
+    console.log("[LOGO] Final processed logo:", pngBuffer.length, "bytes");
+  } catch (err: any) {
+    console.error("[LOGO] Sharp processing failed:", err?.message || err);
+    throw new Error(`Failed to process logo: ${err?.message || err}`);
+  }
+  
+  // Decode PNG
+  let png: PNG;
+  try {
+    png = PNG.sync.read(pngBuffer);
+    console.log("[LOGO] PNG decoded - FINAL SIZE:", png.width, "x", png.height);
+  } catch (err: any) {
+    console.error("[LOGO] PNG decode failed:", err?.message || err);
+    throw new Error(`Failed to decode logo PNG: ${err?.message || err}`);
+  }
+  
+  // Convert to bitmap with Floyd-Steinberg dithering
+  const { width, height, data } = png;
+  const bytesPerRow = Math.ceil(width / 8);
+  
+  // Step 1: Convert RGBA to grayscale array
+  const grayscale = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const alpha = data[idx + 3];
+      
+      if (alpha < 128) {
+        // Transparent = white (255)
+        grayscale[y * width + x] = 255;
+      } else {
+        // Grayscale conversion (0-255)
+        let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        // Increase contrast to make blacks darker - apply power curve
+        // Darken values below 128 more aggressively
+        gray = gray < 128 ? Math.pow(gray / 128, 1.5) * 128 : gray;
+        grayscale[y * width + x] = Math.max(0, Math.min(255, gray));
+      }
+    }
+  }
+  
+  // Step 2: Apply Floyd-Steinberg dithering
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const oldPixel = grayscale[idx];
+      // Lower threshold (140) to make blacks more black - more pixels become black
+      const newPixel = oldPixel < 140 ? 0 : 255;
+      grayscale[idx] = newPixel;
+      const error = oldPixel - newPixel;
+      
+      if (x + 1 < width) {
+        grayscale[idx + 1] += error * (7 / 16);
+      }
+      if (x > 0 && y + 1 < height) {
+        grayscale[idx + width - 1] += error * (3 / 16);
+      }
+      if (y + 1 < height) {
+        grayscale[idx + width] += error * (5 / 16);
+      }
+      if (x + 1 < width && y + 1 < height) {
+        grayscale[idx + width + 1] += error * (1 / 16);
+      }
+    }
+  }
+  
+  // Step 3: Convert dithered grayscale to 1bpp bitmap (MSB first)
+  const bitmap = Buffer.alloc(bytesPerRow * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const isBlack = grayscale[idx] < 128;
+      
+      if (isBlack) {
+        const byteIndex = y * bytesPerRow + Math.floor(x / 8);
+        const bitIndex = 7 - (x % 8); // MSB first
+        bitmap[byteIndex] |= 1 << bitIndex;
+      }
+    }
+  }
+  
+  // GS v 0 command: GS v 0 m xL xH yL yH [bitmap]
+  const xL = bytesPerRow & 0xff;
+  const xH = (bytesPerRow >> 8) & 0xff;
+  const yL = height & 0xff;
+  const yH = (height >> 8) & 0xff;
+  const m = 0x00; // normal mode
+  
+  const header = Buffer.from([
+    0x1D, 0x76, 0x30, m,    // GS v 0 m
+    xL, xH, yL, yH          // width (bytes), height (dots)
+  ]);
+  
+  return Buffer.concat([header, bitmap]);
+}
+
 async function processImage(imageData: Buffer): Promise<Buffer> {
   console.log("[IMAGE] Processing image buffer:", imageData.length, "bytes");
   
@@ -125,7 +268,11 @@ async function processImage(imageData: Buffer): Promise<Buffer> {
         grayscale[y * width + x] = 255;
       } else {
         // Grayscale conversion (0-255)
-        grayscale[y * width + x] = 0.299 * r + 0.587 * g + 0.114 * b;
+        let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        // Increase contrast to make blacks darker - apply power curve
+        // Darken values below 128 more aggressively
+        gray = gray < 128 ? Math.pow(gray / 128, 1.5) * 128 : gray;
+        grayscale[y * width + x] = Math.max(0, Math.min(255, gray));
       }
     }
   }
@@ -139,7 +286,8 @@ async function processImage(imageData: Buffer): Promise<Buffer> {
       const oldPixel = grayscale[idx];
       
       // Quantize to black (0) or white (255)
-      const newPixel = oldPixel < 128 ? 0 : 255;
+      // Lower threshold (140) to make blacks more black - more pixels become black
+      const newPixel = oldPixel < 140 ? 0 : 255;
       grayscale[idx] = newPixel;
       
       // Calculate quantization error
@@ -206,44 +354,85 @@ async function print(job: PrintJob) {
     
     // Initialize printer
     parts.push(Buffer.from([0x1b, 0x40])); // ESC @
+    // Set line spacing to minimum (0) to reduce space above
+    parts.push(Buffer.from([0x1B, 0x33, 0x00])); // ESC 3 0 - Set line spacing to 0
+    // Set top margin to 0
+    parts.push(Buffer.from([0x1D, 0x4C, 0x00, 0x00])); // GS L 0 0 - Set top margin to 0
     
-    // Order: Logo → Text → Image (with minimal spacing)
+    // Order: Name+Logo (if name exists) or Logo (if no name) → Text → Image
     
-    // 1. Add logo first (if logo exists and image is present)
-    if (logoBuffer && job.image) {
+    // 1. Handle name and logo positioning
+    if (job.name && logoBuffer && job.image) {
+      // If name exists: name on left, logo on right (same line)
       try {
-        console.log("[PRINT] Adding logo...");
-        parts.push(Buffer.from("\n")); // Minimal spacing before logo
+        console.log("[PRINT] Adding name with logo on same line...");
         
-        // Center the logo
-        parts.push(Buffer.from([0x1b, 0x61, 0x01])); // ESC a 1 (center)
-        
-        const logoData = await processImage(logoBuffer);
-        console.log("[PRINT] Logo processed, ESC/POS size:", logoData.length, "bytes");
-        parts.push(logoData);
-        
-        // Reset alignment to left after logo
-        parts.push(Buffer.from([0x1b, 0x61, 0x00])); // ESC a 0 (left)
-        parts.push(Buffer.from("\n")); // Minimal spacing after logo
-      } catch (logoErr: any) {
-        console.error("[PRINT] Logo processing failed:", logoErr?.message || logoErr);
-        // Continue even if logo fails
-      }
-    }
-    
-    // 2. Add text (between logo and image) - styled for café receipts
-    if (job.name || job.text) {
-      // Name: Bold, larger, centered
-      if (job.name) {
-        parts.push(Buffer.from([0x1b, 0x61, 0x01])); // Center align
+        // Name: Bold, larger, left-aligned - FIXED POSITION
+        parts.push(Buffer.from([0x1b, 0x61, 0x00])); // Left align
         parts.push(Buffer.from([0x1b, 0x45, 0x01])); // Bold ON
         parts.push(Buffer.from([0x1d, 0x21, 0x11])); // Double height + width (GS !)
         parts.push(Buffer.from(job.name));
         parts.push(Buffer.from([0x1d, 0x21, 0x00])); // Normal size
         parts.push(Buffer.from([0x1b, 0x45, 0x00])); // Bold OFF
+        
+        // Logo: Position independently on right side using absolute positioning
+        // Printer width is 576 dots, logo is max 250px wide
+        // Position logo at ~320 dots from left (right side)
+        const logoPosition = 320;
+        const logoPosL = logoPosition & 0xFF;
+        const logoPosH = (logoPosition >> 8) & 0xFF;
+        parts.push(Buffer.from([0x1B, 0x24, logoPosL, logoPosH])); // ESC $ - absolute horizontal position
+        
+        const logoData = await processLogo(logoBuffer);
+        console.log("[PRINT] Logo processed, ESC/POS size:", logoData.length, "bytes");
+        parts.push(logoData);
+        
+        // Reset alignment to left
+        parts.push(Buffer.from([0x1b, 0x61, 0x00])); // ESC a 0 (left)
+        parts.push(Buffer.from("\n\n")); // Spacing between name/logo and text
+      } catch (logoErr: any) {
+        console.error("[PRINT] Logo processing failed:", logoErr?.message || logoErr);
+        // Fallback: just print name if logo fails
         parts.push(Buffer.from([0x1b, 0x61, 0x00])); // Left align
-        parts.push(Buffer.from("\n"));
+        parts.push(Buffer.from([0x1b, 0x45, 0x01])); // Bold ON
+        parts.push(Buffer.from([0x1d, 0x21, 0x11])); // Double height + width
+        parts.push(Buffer.from(job.name));
+        parts.push(Buffer.from([0x1d, 0x21, 0x00])); // Normal size
+        parts.push(Buffer.from([0x1b, 0x45, 0x00])); // Bold OFF
+        parts.push(Buffer.from("\n\n")); // Spacing between name and text
       }
+    } else if (!job.name && logoBuffer && job.image) {
+      // If no name but logo exists: center the logo
+      try {
+        console.log("[PRINT] Adding centered logo (no name)...");
+        
+        // Center the logo
+        parts.push(Buffer.from([0x1b, 0x61, 0x01])); // ESC a 1 (center)
+        
+        const logoData = await processLogo(logoBuffer);
+        console.log("[PRINT] Logo processed, ESC/POS size:", logoData.length, "bytes");
+        parts.push(logoData);
+        
+        // Reset alignment to left after logo
+        parts.push(Buffer.from([0x1b, 0x61, 0x00])); // ESC a 0 (left)
+        parts.push(Buffer.from("\n\n")); // Spacing after logo
+      } catch (logoErr: any) {
+        console.error("[PRINT] Logo processing failed:", logoErr?.message || logoErr);
+        // Continue even if logo fails
+      }
+    } else if (job.name) {
+      // If name exists but no logo: just print name (left-aligned)
+      parts.push(Buffer.from([0x1b, 0x61, 0x00])); // Left align
+      parts.push(Buffer.from([0x1b, 0x45, 0x01])); // Bold ON
+      parts.push(Buffer.from([0x1d, 0x21, 0x11])); // Double height + width (GS !)
+      parts.push(Buffer.from(job.name));
+      parts.push(Buffer.from([0x1d, 0x21, 0x00])); // Normal size
+      parts.push(Buffer.from([0x1b, 0x45, 0x00])); // Bold OFF
+      parts.push(Buffer.from("\n\n")); // Spacing between name and text
+    }
+    
+    // 2. Add text (between logo/name and image) - styled for café receipts
+    if (job.text) {
       
       // Text: Normal size, left aligned
       if (job.text) {
@@ -268,7 +457,7 @@ async function print(job: PrintJob) {
         
         // Reset alignment to left after image
         parts.push(Buffer.from([0x1b, 0x61, 0x00])); // ESC a 0 (left)
-        parts.push(Buffer.from("\n")); // Minimal spacing after image
+        parts.push(Buffer.from("\n\n\n\n\n")); // More spacing after image for tear-off
       } catch (imgErr: any) {
         console.error("[PRINT] Image processing failed:", imgErr?.message || imgErr);
         console.error("[PRINT] Error stack:", imgErr?.stack);
@@ -276,8 +465,11 @@ async function print(job: PrintJob) {
       }
     }
     
-    // Add newlines at end
-    parts.push(Buffer.from("\n\n\n\n\n\n"));
+    // Add newlines at end before cut
+    parts.push(Buffer.from("\n\n\n\n\n"));
+    
+    // Autocutter: Full cut (ESC i)
+    parts.push(Buffer.from([0x1B, 0x69])); // ESC i - Full cut
     
     // Combine all parts
     const command = Buffer.concat(parts);
@@ -312,8 +504,6 @@ setInterval(async () => {
   }
 }, 8000);   // one print every 8 sec = perfect pace
 
-print({ text: "🧾 PRINTER READY – café mode activated 🧾" });
-
 serve({
   port: 9999,
   async fetch(req) {
@@ -322,6 +512,19 @@ serve({
     console.log("[HTTP] Method:", req.method);
     console.log("[HTTP] Path:", url.pathname);
     console.log("[HTTP] URL:", req.url);
+    
+    // CORS headers to allow requests from Vercel
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "ngrok-skip-browser-warning": "true"
+    };
+    
+    // Handle preflight requests
+    if (req.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
     
     // Handle POST /chat first (before GET route catches it)
     if (url.pathname === "/chat" && req.method === "POST") {
@@ -392,11 +595,22 @@ serve({
         queue.push(job);
         console.log("[QUEUE] ✓ Job added! Queue length now:", queue.length);
         console.log("[QUEUE] ===== FORM SUBMISSION COMPLETE =====");
-        return new Response("queued");
+        return new Response("queued", {
+          headers: { 
+            ...corsHeaders,
+            "ngrok-skip-browser-warning": "true" 
+          }
+        });
       } catch (err: any) {
         console.error("[QUEUE] ✗ Error processing form data:", err);
         console.error("[QUEUE] Error stack:", err?.stack);
-        return new Response(`error processing form: ${err?.message || err}`, { status: 500 });
+        return new Response(`error processing form: ${err?.message || err}`, { 
+          status: 500,
+          headers: { 
+            ...corsHeaders,
+            "ngrok-skip-browser-warning": "true" 
+          }
+        });
       }
     }
     
@@ -408,6 +622,7 @@ serve({
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="ngrok-skip-browser-warning" content="true">
   <title>Send to Printer</title>
   <style>
     * {
@@ -604,6 +819,12 @@ serve({
     </div>
   </div>
   <script>
+    // Note: ngrok warning page appears BEFORE our server receives the request
+    // The only ways to bypass it are:
+    // 1. Upgrade to paid ngrok account (removes warning completely)
+    // 2. Use a browser extension that adds the header
+    // 3. Users click through it once (it only shows once per session)
+    
     document.querySelector('form').onsubmit = async e => {
       e.preventDefault();
       const fd = new FormData(e.target);
@@ -616,7 +837,13 @@ serve({
       button.textContent = "Printing...";
       button.disabled = true;
       try {
-        await fetch("/chat", {method:"POST",body:fd});
+        await fetch("/chat", {
+          method:"POST",
+          body:fd,
+          headers: {
+            "ngrok-skip-browser-warning": "true"
+          }
+        });
         button.textContent = "Queued! 🧾";
         setTimeout(() => {
           button.textContent = originalText;
@@ -634,11 +861,20 @@ serve({
   </script>
 </body>
 </html>
-      `, { headers: { "Content-Type": "text/html" } });
+      `, { headers: { 
+        "Content-Type": "text/html",
+        ...corsHeaders,
+        "ngrok-skip-browser-warning": "true"
+      } });
     }
 
     console.log("[HTTP] No matching route, returning 'ok'");
-    return new Response("ok");
+    return new Response("ok", {
+      headers: { 
+        ...corsHeaders,
+        "ngrok-skip-browser-warning": "true" 
+      }
+    });
   },
 });
 

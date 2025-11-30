@@ -53,3 +53,5 @@ Any ESC/POS compatible thermal printer, including:
 5. Your message will be queued and printed in a few seconds!
 
 
+
+
