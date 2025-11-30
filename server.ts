@@ -354,10 +354,6 @@ async function print(job: PrintJob) {
     
     // Initialize printer
     parts.push(Buffer.from([0x1b, 0x40])); // ESC @
-    // Set line spacing to minimum (0) to reduce space above
-    parts.push(Buffer.from([0x1B, 0x33, 0x00])); // ESC 3 0 - Set line spacing to 0
-    // Set top margin to 0
-    parts.push(Buffer.from([0x1D, 0x4C, 0x00, 0x00])); // GS L 0 0 - Set top margin to 0
     
     // Order: Name+Logo (if name exists) or Logo (if no name) → Text → Image
     
@@ -389,7 +385,7 @@ async function print(job: PrintJob) {
         
         // Reset alignment to left
         parts.push(Buffer.from([0x1b, 0x61, 0x00])); // ESC a 0 (left)
-        parts.push(Buffer.from("\n\n")); // Spacing between name/logo and text
+        parts.push(Buffer.from("\n")); // Minimal spacing after
       } catch (logoErr: any) {
         console.error("[PRINT] Logo processing failed:", logoErr?.message || logoErr);
         // Fallback: just print name if logo fails
@@ -399,7 +395,7 @@ async function print(job: PrintJob) {
         parts.push(Buffer.from(job.name));
         parts.push(Buffer.from([0x1d, 0x21, 0x00])); // Normal size
         parts.push(Buffer.from([0x1b, 0x45, 0x00])); // Bold OFF
-        parts.push(Buffer.from("\n\n")); // Spacing between name and text
+        parts.push(Buffer.from("\n"));
       }
     } else if (!job.name && logoBuffer && job.image) {
       // If no name but logo exists: center the logo
@@ -415,7 +411,7 @@ async function print(job: PrintJob) {
         
         // Reset alignment to left after logo
         parts.push(Buffer.from([0x1b, 0x61, 0x00])); // ESC a 0 (left)
-        parts.push(Buffer.from("\n\n")); // Spacing after logo
+        parts.push(Buffer.from("\n")); // Minimal spacing after logo
       } catch (logoErr: any) {
         console.error("[PRINT] Logo processing failed:", logoErr?.message || logoErr);
         // Continue even if logo fails
@@ -428,7 +424,7 @@ async function print(job: PrintJob) {
       parts.push(Buffer.from(job.name));
       parts.push(Buffer.from([0x1d, 0x21, 0x00])); // Normal size
       parts.push(Buffer.from([0x1b, 0x45, 0x00])); // Bold OFF
-      parts.push(Buffer.from("\n\n")); // Spacing between name and text
+      parts.push(Buffer.from("\n"));
     }
     
     // 2. Add text (between logo/name and image) - styled for café receipts
@@ -457,7 +453,7 @@ async function print(job: PrintJob) {
         
         // Reset alignment to left after image
         parts.push(Buffer.from([0x1b, 0x61, 0x00])); // ESC a 0 (left)
-        parts.push(Buffer.from("\n\n\n\n\n")); // More spacing after image for tear-off
+        parts.push(Buffer.from("\n\n\n")); // Spacing after image for tear-off
       } catch (imgErr: any) {
         console.error("[PRINT] Image processing failed:", imgErr?.message || imgErr);
         console.error("[PRINT] Error stack:", imgErr?.stack);
@@ -466,7 +462,7 @@ async function print(job: PrintJob) {
     }
     
     // Add newlines at end before cut
-    parts.push(Buffer.from("\n\n\n\n\n"));
+    parts.push(Buffer.from("\n\n\n"));
     
     // Autocutter: Full cut (ESC i)
     parts.push(Buffer.from([0x1B, 0x69])); // ESC i - Full cut
