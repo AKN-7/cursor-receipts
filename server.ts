@@ -547,7 +547,7 @@ serve({
         const fd = await Promise.race([
           req.formData(),
           new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("formData() timeout after 10s")), 10000)
+            setTimeout(() => reject(new Error("formData() timeout after 60s")), 60000)
           )
         ]) as FormData;
         console.log("[HTTP] ✓ Form data parsed successfully");
