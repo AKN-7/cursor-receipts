@@ -1012,12 +1012,11 @@ serve({
       button.disabled = true;
       try {
         console.log("[FORM] Submitting to:", "/chat");
+        // Don't add custom headers to avoid CORS preflight - FormData doesn't need Content-Type
         const response = await fetch("/chat", {
           method:"POST",
-          body:fd,
-          headers: {
-            "ngrok-skip-browser-warning": "true"
-          }
+          body:fd
+          // Removed headers to avoid CORS preflight issues
         });
         console.log("[FORM] Response status:", response.status);
         const responseText = await response.text();
