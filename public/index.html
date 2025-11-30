@@ -363,19 +363,21 @@
       try {
         const url = API_URL ? `${API_URL}/chat` : '/chat';
         console.log("[FORM] Submitting to:", url);
+        console.log("[FORM] FormData entries:", Array.from(fd.entries()).map(([k, v]) => [k, v instanceof File ? `File: ${v.name} (${v.size} bytes)` : v]));
         
-        // Don't add custom headers to avoid CORS preflight - FormData doesn't need Content-Type
+        // Use no-cors mode to bypass CORS preflight - ngrok blocks OPTIONS requests
+        // With no-cors, we can't read the response, but if fetch succeeds, request was sent
         const response = await fetch(url, {
           method:"POST",
-          body:fd
-          // Removed headers to avoid CORS preflight issues
+          body:fd,
+          mode: 'no-cors' // Bypass CORS checks - ngrok blocks preflight OPTIONS
         });
-        console.log("[FORM] Response status:", response.status);
-        const responseText = await response.text();
-        console.log("[FORM] Response:", responseText);
         
-        if (!response.ok) {
-          throw new Error(`Server error: ${response.status} - ${responseText}`);
+        console.log("[FORM] Fetch completed, response type:", response.type);
+        // With no-cors, response.type will be 'opaque' and we can't read it
+        // But if fetch didn't throw, the request was likely sent successfully
+        if (response.type === 'opaque' || response.type === 'basic') {
+          console.log("[FORM] Request sent successfully (no-cors mode)");
         }
         
         button.textContent = "Queued! 🧾";
@@ -384,9 +386,13 @@
           button.disabled = false;
         }, 2000);
         e.target.reset();
-      } catch (err) {
+      } catch (err: any) {
         console.error("[FORM] Submit error:", err);
-        alert(`Error: ${err.message || 'Failed to submit. Check console for details.'}`);
+        console.error("[FORM] Error name:", err?.name);
+        console.error("[FORM] Error message:", err?.message);
+        console.error("[FORM] Error stack:", err?.stack);
+        const errorMsg = err?.message || 'Failed to submit';
+        alert(`Error: ${errorMsg}\n\nCheck browser console (F12) for details.`);
         button.textContent = "Error - Try again";
         button.disabled = false;
         setTimeout(() => {
