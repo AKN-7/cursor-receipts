@@ -484,7 +484,8 @@ async function print(job: PrintJob) {
   }
 }
 
-setInterval(async () => {
+// Process queue immediately when jobs are added
+async function processQueue() {
   if (queue.length > 0) {
     console.log("[QUEUE] ===== QUEUE PROCESSOR =====");
     console.log("[QUEUE] Processing queue,", queue.length, "job(s) waiting");
@@ -497,8 +498,14 @@ setInterval(async () => {
     });
     await print(job);
     console.log("[QUEUE] ===== QUEUE PROCESSOR COMPLETE =====");
+    
+    // Process next job immediately (no delay)
+    processQueue();
   }
-}, 8000);   // one print every 8 sec = perfect pace
+}
+
+// Start processing queue
+processQueue();
 
 serve({
   port: 9999,
@@ -605,6 +612,11 @@ serve({
         queue.push(job);
         console.log("[QUEUE] ✓ Job added! Queue length now:", queue.length);
         console.log("[QUEUE] ===== FORM SUBMISSION COMPLETE =====");
+        
+        // Trigger queue processing if it's not already running
+        if (queue.length === 1) {
+          processQueue();
+        }
         return new Response("queued", {
           headers: { 
             ...corsHeaders,

@@ -39,18 +39,18 @@
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       background: var(--theme-bg);
       color: var(--theme-text);
-      height: 100vh;
+      min-height: 100vh;
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: center;
-      padding: 0;
+      padding: 2rem 0.5rem;
       box-sizing: border-box;
       overflow-y: auto;
     }
     
     .container {
       width: 100%;
-      max-width: 600px;
+      max-width: 480px;
       box-sizing: border-box;
       padding: 0.5rem;
     }
@@ -66,11 +66,11 @@
     }
     
     h1 {
-      font-size: 3.5rem;
+      font-size: 2.5rem;
       font-weight: 600;
       text-align: center;
       margin-bottom: 1.5rem;
-      margin-top: -2rem;
+      margin-top: 1rem;
       color: var(--theme-text);
       letter-spacing: -0.02em;
       text-transform: uppercase;
@@ -266,19 +266,89 @@
     
     /* Mobile: stack postcards vertically */
     @media (max-width: 768px) {
-      h1 {
-        font-size: 2rem !important;
-        margin-top: -1rem !important;
-        padding: 0 1rem;
+      body {
+        padding: 1rem 0.75rem;
+        min-height: 100vh;
+        align-items: flex-start;
+        justify-content: flex-start;
       }
       
       .container {
         max-width: 100% !important;
-        padding: 0.5rem 1rem;
+        padding: 0;
+        width: 100%;
+      }
+      
+      h1 {
+        font-size: 1.75rem !important;
+        margin-top: 0 !important;
+        margin-bottom: 1.25rem !important;
+        padding: 0 0.5rem;
+        white-space: normal !important;
+        line-height: 1.2;
+        word-break: break-word;
       }
       
       .card {
-        padding: 1rem;
+        padding: 1.25rem;
+        border-radius: 12px;
+      }
+      
+      h2 {
+        font-size: 1rem;
+        margin-bottom: 0.5rem;
+      }
+      
+      .card p {
+        font-size: 0.8125rem;
+        margin-bottom: 1.25rem;
+        line-height: 1.4;
+      }
+      
+      .form-group {
+        margin-bottom: 1rem;
+      }
+      
+      label {
+        font-size: 0.8125rem;
+        margin-bottom: 0.375rem;
+      }
+      
+      input[type="text"],
+      textarea {
+        padding: 0.875rem;
+        font-size: 1rem;
+        border-radius: 8px;
+        -webkit-appearance: none;
+        appearance: none;
+      }
+      
+      textarea {
+        min-height: 100px;
+      }
+      
+      input[type="file"] {
+        padding: 0.875rem;
+        font-size: 0.875rem;
+      }
+      
+      input[type="file"]::file-selector-button {
+        padding: 0.5rem 0.875rem;
+        font-size: 0.875rem;
+      }
+      
+      button[type="submit"] {
+        padding: 1rem 1.5rem;
+        font-size: 1rem;
+        font-weight: 600;
+        border-radius: 8px;
+        margin-top: 0.5rem;
+        min-height: 48px;
+      }
+      
+      .helper-text {
+        font-size: 0.75rem;
+        margin-top: 0.375rem;
       }
       
       .postcards-container {
@@ -296,17 +366,33 @@
       .postcard img {
         max-height: 400px;
       }
-      
+    }
+    
+    /* Extra small mobile devices */
+    @media (max-width: 375px) {
       body {
-        flex-direction: column;
-        padding-bottom: 2rem;
+        padding: 0.75rem 0.5rem;
+      }
+      
+      h1 {
+        font-size: 1.5rem !important;
+        margin-bottom: 1rem !important;
+      }
+      
+      .card {
+        padding: 1rem;
+      }
+      
+      button[type="submit"] {
+        font-size: 0.9375rem;
+        padding: 0.875rem 1.25rem;
       }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1 style="text-align: center; font-size: 3.5rem; font-weight: 600; color: var(--theme-text); margin-bottom: 1.5rem; margin-top: -2rem; letter-spacing: -0.02em; text-transform: uppercase; white-space: nowrap;">CURSOR FOR PRINTING</h1>
+    <h1>CURSOR FOR PRINTING</h1>
     <div class="card">
       <h2 style="font-size: 1.125rem; font-weight: 600; text-align: center; margin-bottom: 0.75rem; margin-top: 0; color: var(--theme-text);">Send to Printer 🧾</h2>
       <p style="text-align: center; font-size: 0.875rem; color: var(--theme-text-sec); margin-bottom: 1rem;">Find Ameen at the printer to the right of the projector screen!</p>
@@ -368,26 +454,52 @@
           return [k, v instanceof File ? 'File: ' + v.name + ' (' + v.size + ' bytes)' : v];
         }));
         
-        const response = await fetch(url, {
-          method: 'POST',
-          body: fd,
-          mode: 'cors'
-        });
+        // Add timeout to fetch request
+        const controller = new AbortController();
+        const timeoutId = setTimeout(function() {
+          controller.abort();
+        }, 30000); // 30 second timeout
         
-        console.log("[FORM] Response status:", response.status);
-        const responseText = await response.text();
-        console.log("[FORM] Response:", responseText);
-        
-        if (!response.ok) {
-          throw new Error('Server error: ' + response.status + ' - ' + responseText);
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            body: fd,
+            mode: 'cors',
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+          
+          console.log("[FORM] Response status:", response.status);
+          
+          // Try to read response with timeout
+          const responseTextPromise = response.text();
+          const responseTextTimeout = new Promise(function(resolve, reject) {
+            setTimeout(function() {
+              reject(new Error('Response read timeout'));
+            }, 10000);
+          });
+          
+          const responseText = await Promise.race([responseTextPromise, responseTextTimeout]);
+          console.log("[FORM] Response:", responseText);
+          
+          if (!response.ok) {
+            throw new Error('Server error: ' + response.status + ' - ' + responseText);
+          }
+          
+          button.textContent = "Queued! 🧾";
+          setTimeout(function() {
+            button.textContent = originalText;
+            button.disabled = false;
+          }, 2000);
+          e.target.reset();
+        } catch (fetchErr) {
+          clearTimeout(timeoutId);
+          if (fetchErr.name === 'AbortError') {
+            throw new Error('Request timeout - please try again');
+          }
+          throw fetchErr;
         }
-        
-        button.textContent = "Queued! 🧾";
-        setTimeout(function() {
-          button.textContent = originalText;
-          button.disabled = false;
-        }, 2000);
-        e.target.reset();
       } catch (err) {
         console.error("[FORM] Submit error:", err);
         var errorMsg = (err && err.message) ? err.message : 'Failed to submit';
