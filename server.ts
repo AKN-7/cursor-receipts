@@ -499,8 +499,8 @@ async function processQueue() {
     await print(job);
     console.log("[QUEUE] ===== QUEUE PROCESSOR COMPLETE =====");
     
-    // Process next job immediately (no delay)
-    processQueue();
+    // Process next job after a short delay (needed for mobile stability)
+    setTimeout(processQueue, 500);
   }
 }
 
