@@ -508,18 +508,32 @@ serve({
     console.log("[HTTP] Method:", req.method);
     console.log("[HTTP] Path:", url.pathname);
     console.log("[HTTP] URL:", req.url);
+    console.log("[HTTP] Origin:", req.headers.get("origin"));
+    console.log("[HTTP] User-Agent:", req.headers.get("user-agent"));
     
-    // CORS headers to allow requests from Vercel
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
+    // CORS headers to allow requests from Vercel and any origin
+    const origin = req.headers.get("origin");
+    const corsHeaders: Record<string, string> = {
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, ngrok-skip-browser-warning",
       "ngrok-skip-browser-warning": "true"
     };
     
+    // Set origin - use actual origin if provided, otherwise allow all
+    if (origin) {
+      corsHeaders["Access-Control-Allow-Origin"] = origin;
+      corsHeaders["Access-Control-Allow-Credentials"] = "true";
+    } else {
+      corsHeaders["Access-Control-Allow-Origin"] = "*";
+    }
+    
     // Handle preflight requests
     if (req.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
+      console.log("[HTTP] Handling OPTIONS preflight request");
+      return new Response(null, { 
+        status: 204,
+        headers: corsHeaders 
+      });
     }
     
     // Handle POST /chat first (before GET route catches it)
@@ -644,6 +658,9 @@ serve({
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="ngrok-skip-browser-warning" content="true">
   <title>Send to Printer</title>
+  <link rel="icon" type="image/png" href="/assets/dot.png">
+  <link rel="shortcut icon" type="image/png" href="/assets/dot.png">
+  <link rel="apple-touch-icon" href="/assets/dot.png">
   <style>
     * {
       margin: 0;
@@ -711,7 +728,6 @@ serve({
       letter-spacing: -0.02em;
       text-transform: uppercase;
       white-space: nowrap;
-      font-family: "Courier New", Courier, "Lucida Console", Monaco, monospace;
     }
     
     h2 {
@@ -903,16 +919,23 @@ serve({
     
     /* Mobile: stack postcards vertically */
     @media (max-width: 768px) {
+      h1 {
+        font-size: 2rem !important;
+        margin-top: -1rem !important;
+        padding: 0 1rem;
+      }
+      
+      .container {
+        max-width: 100% !important;
+        padding: 0.5rem 1rem;
+      }
+      
+      .card {
+        padding: 1rem;
+      }
+      
       .postcards-container {
-        position: relative;
-        top: auto;
-        left: auto;
-        transform: none;
-        height: auto;
-        flex-direction: column;
-        padding: 2rem 1rem;
-        margin-bottom: 2rem;
-        pointer-events: auto;
+        display: none;
       }
       
       .postcard {
@@ -935,19 +958,8 @@ serve({
   </style>
 </head>
 <body>
-  <div class="postcards-container">
-    <div class="postcard">
-      <img src="/assets/3.jpeg" alt="Example print 3">
-    </div>
-    <div class="postcard">
-      <img src="/assets/2.jpeg" alt="Example print 2">
-    </div>
-    <div class="postcard">
-      <img src="/assets/1.jpeg" alt="Example print 1">
-    </div>
-  </div>
   <div class="container">
-    <h1 style="text-align: center; font-size: 3.5rem; font-weight: 600; color: var(--theme-text); margin-bottom: 1.5rem; margin-top: -2rem; letter-spacing: -0.02em; text-transform: uppercase; white-space: nowrap; font-family: 'Courier New', Courier, 'Lucida Console', Monaco, monospace;">CURSOR FOR PRINTING</h1>
+    <h1 style="text-align: center; font-size: 3.5rem; font-weight: 600; color: var(--theme-text); margin-bottom: 1.5rem; margin-top: -2rem; letter-spacing: -0.02em; text-transform: uppercase; white-space: nowrap;">CURSOR FOR PRINTING</h1>
     <div class="card">
       <h2 style="font-size: 1.125rem; font-weight: 600; text-align: center; margin-bottom: 0.75rem; margin-top: 0; color: var(--theme-text);">Send to Printer 🧾</h2>
       <p style="text-align: center; font-size: 0.875rem; color: var(--theme-text-sec); margin-bottom: 1rem;">Find Ameen at the printer to the right of the projector screen!</p>
@@ -969,6 +981,17 @@ serve({
       </form>
     </div>
   </div>
+  <div class="postcards-container">
+    <div class="postcard">
+      <img src="/assets/3.jpeg" alt="Example print 3">
+    </div>
+    <div class="postcard">
+      <img src="/assets/2.jpeg" alt="Example print 2">
+    </div>
+    <div class="postcard">
+      <img src="/assets/1.jpeg" alt="Example print 1">
+    </div>
+  </div>
   <script>
     // Note: ngrok warning page appears BEFORE our server receives the request
     // The only ways to bypass it are:
@@ -988,13 +1011,22 @@ serve({
       button.textContent = "Printing...";
       button.disabled = true;
       try {
-        await fetch("/chat", {
+        console.log("[FORM] Submitting to:", "/chat");
+        const response = await fetch("/chat", {
           method:"POST",
           body:fd,
           headers: {
             "ngrok-skip-browser-warning": "true"
           }
         });
+        console.log("[FORM] Response status:", response.status);
+        const responseText = await response.text();
+        console.log("[FORM] Response:", responseText);
+        
+        if (!response.ok) {
+          throw new Error(`Server error: ${response.status} - ${responseText}`);
+        }
+        
         button.textContent = "Queued! 🧾";
         setTimeout(() => {
           button.textContent = originalText;
@@ -1002,6 +1034,8 @@ serve({
         }, 2000);
         e.target.reset();
       } catch (err) {
+        console.error("[FORM] Submit error:", err);
+        alert(`Error: ${err.message || 'Failed to submit. Check console for details.'}`);
         button.textContent = "Error - Try again";
         button.disabled = false;
         setTimeout(() => {
@@ -1014,8 +1048,7 @@ serve({
 </html>
       `, { headers: { 
         "Content-Type": "text/html",
-        ...corsHeaders,
-        "ngrok-skip-browser-warning": "true"
+        ...corsHeaders
       } });
     }
 

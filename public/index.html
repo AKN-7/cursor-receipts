@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="ngrok-skip-browser-warning" content="true">
   <title>Send to Printer</title>
+  <link rel="icon" type="image/png" href="/assets/dot.png">
+  <link rel="shortcut icon" type="image/png" href="/assets/dot.png">
+  <link rel="apple-touch-icon" href="/assets/dot.png">
   <style>
     * {
       margin: 0;
@@ -72,7 +75,6 @@
       letter-spacing: -0.02em;
       text-transform: uppercase;
       white-space: nowrap;
-      font-family: "Courier New", Courier, "Lucida Console", Monaco, monospace;
     }
     
     h2 {
@@ -264,16 +266,23 @@
     
     /* Mobile: stack postcards vertically */
     @media (max-width: 768px) {
+      h1 {
+        font-size: 2rem !important;
+        margin-top: -1rem !important;
+        padding: 0 1rem;
+      }
+      
+      .container {
+        max-width: 100% !important;
+        padding: 0.5rem 1rem;
+      }
+      
+      .card {
+        padding: 1rem;
+      }
+      
       .postcards-container {
-        position: relative;
-        top: auto;
-        left: auto;
-        transform: none;
-        height: auto;
-        flex-direction: column;
-        padding: 2rem 1rem;
-        margin-bottom: 2rem;
-        pointer-events: auto;
+        display: none;
       }
       
       .postcard {
@@ -296,19 +305,8 @@
   </style>
 </head>
 <body>
-  <div class="postcards-container">
-    <div class="postcard">
-      <img src="/assets/3.jpeg" alt="Example print 3">
-    </div>
-    <div class="postcard">
-      <img src="/assets/2.jpeg" alt="Example print 2">
-    </div>
-    <div class="postcard">
-      <img src="/assets/1.jpeg" alt="Example print 1">
-    </div>
-  </div>
   <div class="container">
-    <h1 style="text-align: center; font-size: 3.5rem; font-weight: 600; color: var(--theme-text); margin-bottom: 1.5rem; margin-top: -2rem; letter-spacing: -0.02em; text-transform: uppercase; white-space: nowrap; font-family: 'Courier New', Courier, 'Lucida Console', Monaco, monospace;">CURSOR FOR PRINTING</h1>
+    <h1 style="text-align: center; font-size: 3.5rem; font-weight: 600; color: var(--theme-text); margin-bottom: 1.5rem; margin-top: -2rem; letter-spacing: -0.02em; text-transform: uppercase; white-space: nowrap;">CURSOR FOR PRINTING</h1>
     <div class="card">
       <h2 style="font-size: 1.125rem; font-weight: 600; text-align: center; margin-bottom: 0.75rem; margin-top: 0; color: var(--theme-text);">Send to Printer 🧾</h2>
       <p style="text-align: center; font-size: 0.875rem; color: var(--theme-text-sec); margin-bottom: 1rem;">Find Ameen at the printer to the right of the projector screen!</p>
@@ -330,10 +328,26 @@
       </form>
     </div>
   </div>
+  <div class="postcards-container">
+    <div class="postcard">
+      <img src="/assets/3.jpeg" alt="Example print 3">
+    </div>
+    <div class="postcard">
+      <img src="/assets/2.jpeg" alt="Example print 2">
+    </div>
+    <div class="postcard">
+      <img src="/assets/1.jpeg" alt="Example print 1">
+    </div>
+  </div>
   <script>
     // Set your ngrok URL here - update this when ngrok restarts
     // Or set it via Vercel environment variable: window.API_URL
-    const API_URL = window.API_URL || 'https://tabatha-atrial-thresa.ngrok-free.dev';
+    // If on Vercel, use ngrok URL; if on local/ngrok, use relative URL
+    const isVercel = window.location.hostname.includes('vercel.app');
+    const API_URL = window.API_URL || (isVercel ? 'https://tabatha-atrial-thresa.ngrok-free.dev' : '');
+    console.log('[FORM] Hostname:', window.location.hostname);
+    console.log('[FORM] Is Vercel:', isVercel);
+    console.log('[FORM] API_URL:', API_URL);
     
     document.querySelector('form').onsubmit = async e => {
       e.preventDefault();
@@ -347,13 +361,23 @@
       button.textContent = "Printing...";
       button.disabled = true;
       try {
-        await fetch(`${API_URL}/chat`, {
+        const url = API_URL ? `${API_URL}/chat` : '/chat';
+        console.log("[FORM] Submitting to:", url);
+        const response = await fetch(url, {
           method:"POST",
           body:fd,
           headers: {
             "ngrok-skip-browser-warning": "true"
           }
         });
+        console.log("[FORM] Response status:", response.status);
+        const responseText = await response.text();
+        console.log("[FORM] Response:", responseText);
+        
+        if (!response.ok) {
+          throw new Error(`Server error: ${response.status} - ${responseText}`);
+        }
+        
         button.textContent = "Queued! 🧾";
         setTimeout(() => {
           button.textContent = originalText;
@@ -361,6 +385,8 @@
         }, 2000);
         e.target.reset();
       } catch (err) {
+        console.error("[FORM] Submit error:", err);
+        alert(`Error: ${err.message || 'Failed to submit. Check console for details.'}`);
         button.textContent = "Error - Try again";
         button.disabled = false;
         setTimeout(() => {
