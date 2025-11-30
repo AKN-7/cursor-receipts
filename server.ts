@@ -644,9 +644,6 @@ serve({
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="ngrok-skip-browser-warning" content="true">
   <title>Send to Printer</title>
-  <link rel="icon" type="image/png" href="/assets/dot.png">
-  <link rel="shortcut icon" type="image/png" href="/assets/dot.png">
-  <link rel="apple-touch-icon" href="/assets/dot.png">
   <style>
     * {
       margin: 0;
@@ -714,6 +711,7 @@ serve({
       letter-spacing: -0.02em;
       text-transform: uppercase;
       white-space: nowrap;
+      font-family: "Courier New", Courier, "Lucida Console", Monaco, monospace;
     }
     
     h2 {
@@ -905,23 +903,16 @@ serve({
     
     /* Mobile: stack postcards vertically */
     @media (max-width: 768px) {
-      h1 {
-        font-size: 2rem !important;
-        margin-top: -1rem !important;
-        padding: 0 1rem;
-      }
-      
-      .container {
-        max-width: 100% !important;
-        padding: 0.5rem 1rem;
-      }
-      
-      .card {
-        padding: 1rem;
-      }
-      
       .postcards-container {
-        display: none;
+        position: relative;
+        top: auto;
+        left: auto;
+        transform: none;
+        height: auto;
+        flex-direction: column;
+        padding: 2rem 1rem;
+        margin-bottom: 2rem;
+        pointer-events: auto;
       }
       
       .postcard {
@@ -944,8 +935,19 @@ serve({
   </style>
 </head>
 <body>
+  <div class="postcards-container">
+    <div class="postcard">
+      <img src="/assets/3.jpeg" alt="Example print 3">
+    </div>
+    <div class="postcard">
+      <img src="/assets/2.jpeg" alt="Example print 2">
+    </div>
+    <div class="postcard">
+      <img src="/assets/1.jpeg" alt="Example print 1">
+    </div>
+  </div>
   <div class="container">
-    <h1 style="text-align: center; font-size: 3.5rem; font-weight: 600; color: var(--theme-text); margin-bottom: 1.5rem; margin-top: -2rem; letter-spacing: -0.02em; text-transform: uppercase; white-space: nowrap;">CURSOR FOR PRINTING</h1>
+    <h1 style="text-align: center; font-size: 3.5rem; font-weight: 600; color: var(--theme-text); margin-bottom: 1.5rem; margin-top: -2rem; letter-spacing: -0.02em; text-transform: uppercase; white-space: nowrap; font-family: 'Courier New', Courier, 'Lucida Console', Monaco, monospace;">CURSOR FOR PRINTING</h1>
     <div class="card">
       <h2 style="font-size: 1.125rem; font-weight: 600; text-align: center; margin-bottom: 0.75rem; margin-top: 0; color: var(--theme-text);">Send to Printer 🧾</h2>
       <p style="text-align: center; font-size: 0.875rem; color: var(--theme-text-sec); margin-bottom: 1rem;">Find Ameen at the printer to the right of the projector screen!</p>
@@ -965,17 +967,6 @@ serve({
         </div>
         <button type="submit">PRINT IT</button>
       </form>
-    </div>
-  </div>
-  <div class="postcards-container">
-    <div class="postcard">
-      <img src="/assets/3.jpeg" alt="Example print 3">
-    </div>
-    <div class="postcard">
-      <img src="/assets/2.jpeg" alt="Example print 2">
-    </div>
-    <div class="postcard">
-      <img src="/assets/1.jpeg" alt="Example print 1">
     </div>
   </div>
   <script>
