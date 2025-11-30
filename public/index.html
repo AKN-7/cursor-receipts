@@ -363,72 +363,38 @@
       try {
         const url = API_URL ? API_URL + '/chat' : '/chat';
         console.log("[FORM] Submitting to:", url);
-        console.log("[FORM] FormData entries:", Array.from(fd.entries()).map(([k, v]) => [k, v instanceof File ? `File: ${v.name} (${v.size} bytes)` : v]));
+        console.log("[FORM] FormData entries:", Array.from(fd.entries()).map(function(entry) {
+          var k = entry[0], v = entry[1];
+          return [k, v instanceof File ? 'File: ' + v.name + ' (' + v.size + ' bytes)' : v];
+        }));
         
-        // Use XMLHttpRequest instead of fetch - it handles CORS better with ngrok
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', url, true);
+        const response = await fetch(url, {
+          method: 'POST',
+          body: fd,
+          mode: 'cors'
+        });
         
-        // Add ngrok skip header if using ngrok
-        if (API_URL && API_URL.includes('ngrok')) {
-          xhr.setRequestHeader('ngrok-skip-browser-warning', 'true');
+        console.log("[FORM] Response status:", response.status);
+        const responseText = await response.text();
+        console.log("[FORM] Response:", responseText);
+        
+        if (!response.ok) {
+          throw new Error('Server error: ' + response.status + ' - ' + responseText);
         }
         
-        xhr.onload = function() {
-          console.log("[FORM] XHR Response status:", xhr.status);
-          console.log("[FORM] XHR Response:", xhr.responseText);
-          
-          // Check if ngrok warning page was returned (contains HTML)
-          if (xhr.responseText && xhr.responseText.trim().startsWith('<!DOCTYPE')) {
-            console.error("[FORM] Received ngrok warning page instead of response");
-            alert('Please visit the ngrok URL directly first to bypass the warning page, then try again.');
-            button.textContent = "Error - Try again";
-            button.disabled = false;
-            setTimeout(function() {
-              button.textContent = originalText;
-            }, 2000);
-            return;
-          }
-          
-          if (xhr.status >= 200 && xhr.status < 300) {
-            button.textContent = "Queued! 🧾";
-            setTimeout(function() {
-              button.textContent = originalText;
-              button.disabled = false;
-            }, 2000);
-            e.target.reset();
-          } else {
-            alert('Server error: ' + xhr.status + ' - ' + xhr.responseText);
-            button.textContent = "Error - Try again";
-            button.disabled = false;
-            setTimeout(function() {
-              button.textContent = originalText;
-            }, 2000);
-          }
-        };
-        
-        xhr.onerror = function() {
-          console.error("[FORM] XHR Error - network failure");
-          alert('Network error - failed to connect to server. Make sure ngrok is running.');
-          button.textContent = "Error - Try again";
+        button.textContent = "Queued! 🧾";
+        setTimeout(function() {
+          button.textContent = originalText;
           button.disabled = false;
-          setTimeout(function() {
-            button.textContent = originalText;
-          }, 2000);
-        };
-        
-        xhr.send(fd);
-        return; // Exit early since XHR handles the response asynchronously
-      } catch (err: any) {
+        }, 2000);
+        e.target.reset();
+      } catch (err) {
         console.error("[FORM] Submit error:", err);
-        console.error("[FORM] Error name:", err?.name);
-        console.error("[FORM] Error message:", err?.message);
-        console.error("[FORM] Error stack:", err?.stack);
-        const errorMsg = err?.message || 'Failed to submit';
-        alert(`Error: ${errorMsg}\n\nCheck browser console (F12) for details.`);
+        var errorMsg = (err && err.message) ? err.message : 'Failed to submit';
+        alert('Error: ' + errorMsg + '\\n\\nCheck browser console (F12) for details.');
         button.textContent = "Error - Try again";
         button.disabled = false;
-        setTimeout(() => {
+        setTimeout(function() {
           button.textContent = originalText;
         }, 2000);
       }
