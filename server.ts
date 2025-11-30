@@ -921,15 +921,7 @@ serve({
       }
       
       .postcards-container {
-        position: relative;
-        top: auto;
-        left: auto;
-        transform: none;
-        height: auto;
-        flex-direction: column;
-        padding: 2rem 1rem;
-        margin-bottom: 2rem;
-        pointer-events: auto;
+        display: none;
       }
       
       .postcard {
