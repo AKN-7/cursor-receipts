@@ -365,27 +365,32 @@
         console.log("[FORM] Submitting to:", url);
         console.log("[FORM] FormData entries:", Array.from(fd.entries()).map(([k, v]) => [k, v instanceof File ? `File: ${v.name} (${v.size} bytes)` : v]));
         
-        // Use no-cors mode to bypass CORS preflight - ngrok blocks OPTIONS requests
-        // With no-cors, we can't read the response, but if fetch succeeds, request was sent
-        const response = await fetch(url, {
-          method:"POST",
-          body:fd,
-          mode: 'no-cors' // Bypass CORS checks - ngrok blocks preflight OPTIONS
-        });
+        // Use XMLHttpRequest instead of fetch - it handles CORS better with ngrok
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
         
-        console.log("[FORM] Fetch completed, response type:", response.type);
-        // With no-cors, response.type will be 'opaque' and we can't read it
-        // But if fetch didn't throw, the request was likely sent successfully
-        if (response.type === 'opaque' || response.type === 'basic') {
-          console.log("[FORM] Request sent successfully (no-cors mode)");
-        }
+        xhr.onload = function() {
+          console.log("[FORM] XHR Response status:", xhr.status);
+          console.log("[FORM] XHR Response:", xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) {
+            button.textContent = "Queued! 🧾";
+            setTimeout(() => {
+              button.textContent = originalText;
+              button.disabled = false;
+            }, 2000);
+            e.target.reset();
+          } else {
+            throw new Error(`Server error: ${xhr.status} - ${xhr.responseText}`);
+          }
+        };
         
-        button.textContent = "Queued! 🧾";
-        setTimeout(() => {
-          button.textContent = originalText;
-          button.disabled = false;
-        }, 2000);
-        e.target.reset();
+        xhr.onerror = function() {
+          console.error("[FORM] XHR Error - network failure");
+          throw new Error('Network error - failed to connect to server');
+        };
+        
+        xhr.send(fd);
+        return; // Exit early since XHR handles the response asynchronously
       } catch (err: any) {
         console.error("[FORM] Submit error:", err);
         console.error("[FORM] Error name:", err?.name);

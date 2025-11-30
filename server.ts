@@ -993,11 +993,9 @@ serve({
     </div>
   </div>
   <script>
-    // Note: ngrok warning page appears BEFORE our server receives the request
-    // The only ways to bypass it are:
-    // 1. Upgrade to paid ngrok account (removes warning completely)
-    // 2. Use a browser extension that adds the header
-    // 3. Users click through it once (it only shows once per session)
+    const API_URL = window.location.hostname.includes('vercel.app') 
+      ? 'https://tabatha-atrial-thresa.ngrok-free.dev'
+      : '';
     
     document.querySelector('form').onsubmit = async e => {
       e.preventDefault();
@@ -1011,30 +1009,51 @@ serve({
       button.textContent = "Printing...";
       button.disabled = true;
       try {
-        console.log("[FORM] Submitting to:", "/chat");
-        // Don't add custom headers to avoid CORS preflight - FormData doesn't need Content-Type
-        const response = await fetch("/chat", {
-          method:"POST",
-          body:fd
-          // Removed headers to avoid CORS preflight issues
-        });
-        console.log("[FORM] Response status:", response.status);
-        const responseText = await response.text();
-        console.log("[FORM] Response:", responseText);
+        const url = API_URL ? API_URL + '/chat' : '/chat';
+        console.log("[FORM] Submitting to:", url);
+        console.log("[FORM] FormData entries:", Array.from(fd.entries()).map(function(entry) {
+          var k = entry[0], v = entry[1];
+          return [k, v instanceof File ? 'File: ' + v.name + ' (' + v.size + ' bytes)' : v];
+        }));
         
-        if (!response.ok) {
-          throw new Error(`Server error: ${response.status} - ${responseText}`);
-        }
+        // Use XMLHttpRequest instead of fetch - it handles CORS better with ngrok
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
         
-        button.textContent = "Queued! 🧾";
-        setTimeout(() => {
-          button.textContent = originalText;
+        xhr.onload = function() {
+          console.log("[FORM] XHR Response status:", xhr.status);
+          console.log("[FORM] XHR Response:", xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) {
+            button.textContent = "Queued! 🧾";
+            setTimeout(() => {
+              button.textContent = originalText;
+              button.disabled = false;
+            }, 2000);
+            e.target.reset();
+          } else {
+            alert('Error: ' + xhr.status + ' - ' + xhr.responseText);
+            button.textContent = "Error - Try again";
+            button.disabled = false;
+            setTimeout(function() {
+              button.textContent = originalText;
+            }, 2000);
+          }
+        };
+        
+        xhr.onerror = function() {
+          console.error("[FORM] XHR Error - network failure");
+          alert('Network error - failed to connect to server');
+          button.textContent = "Error - Try again";
           button.disabled = false;
-        }, 2000);
-        e.target.reset();
+          setTimeout(function() {
+            button.textContent = originalText;
+          }, 2000);
+        };
+        
+        xhr.send(fd);
       } catch (err) {
         console.error("[FORM] Submit error:", err);
-        alert(`Error: ${err.message || 'Failed to submit. Check console for details.'}`);
+        alert('Error: ' + (err.message || 'Failed to submit. Check console for details.'));
         button.textContent = "Error - Try again";
         button.disabled = false;
         setTimeout(() => {
