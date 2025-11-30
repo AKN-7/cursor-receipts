@@ -952,17 +952,6 @@ serve({
   </style>
 </head>
 <body>
-  <div class="postcards-container">
-    <div class="postcard">
-      <img src="/assets/3.jpeg" alt="Example print 3">
-    </div>
-    <div class="postcard">
-      <img src="/assets/2.jpeg" alt="Example print 2">
-    </div>
-    <div class="postcard">
-      <img src="/assets/1.jpeg" alt="Example print 1">
-    </div>
-  </div>
   <div class="container">
     <h1 style="text-align: center; font-size: 3.5rem; font-weight: 600; color: var(--theme-text); margin-bottom: 1.5rem; margin-top: -2rem; letter-spacing: -0.02em; text-transform: uppercase; white-space: nowrap;">CURSOR FOR PRINTING</h1>
     <div class="card">
@@ -984,6 +973,17 @@ serve({
         </div>
         <button type="submit">PRINT IT</button>
       </form>
+    </div>
+  </div>
+  <div class="postcards-container">
+    <div class="postcard">
+      <img src="/assets/3.jpeg" alt="Example print 3">
+    </div>
+    <div class="postcard">
+      <img src="/assets/2.jpeg" alt="Example print 2">
+    </div>
+    <div class="postcard">
+      <img src="/assets/1.jpeg" alt="Example print 1">
     </div>
   </div>
   <script>
